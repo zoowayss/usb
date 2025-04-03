@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iomanip>
 #include <fcntl.h>
+#include <cctype>
 
 // TCPSocket实现
 TCPSocket::~TCPSocket() {
@@ -158,17 +159,35 @@ void TCPSocket::close() {
 
 // 发送USBIP数据包
 bool TCPSocket::sendPacket(const usbip_packet& packet) {
-    // 发送头部
-    usbip_header header = packet.header;
-    header.version = usbip_utils::htonl_wrap(header.version);
-    header.command = usbip_utils::htonl_wrap(header.command);
-    header.status = usbip_utils::htonl_wrap(header.status);
+    // 打印发送的包信息
+    std::cout << "准备发送数据包: 版本=0x" << std::hex << packet.header.version
+              << ", 命令=0x" << packet.header.command
+              << ", 状态=0x" << packet.header.status << std::dec << std::endl;
     
+    // 在发送头部时正确处理字节序
+    // 注意：对于官方客户端兼容性，需要小心处理版本和命令的字节序
+    usbip_header header;
+    
+    // 官方USBIP要求：版本和命令都需要是网络字节序
+    // 但内部表示与发送格式不同
+    uint8_t* headerBytes = reinterpret_cast<uint8_t*>(&header);
+    
+    // 手动构建头部，以确保与官方客户端兼容
+    // 版本和命令需要手动转换为正确的格式
+    headerBytes[0] = (packet.header.version >> 8) & 0xff;
+    headerBytes[1] = packet.header.version & 0xff;
+    headerBytes[2] = (packet.header.command >> 8) & 0xff;
+    headerBytes[3] = packet.header.command & 0xff;
+    
+    // 状态字段是一个完整的uint32_t，使用标准转换
+    header.status = usbip_utils::htonl_wrap(packet.header.status);
+    
+    // 发送头部
     if (!send(&header, sizeof(header))) {
         return false;
     }
     
-    // 根据命令类型发送不同的数据
+    // 根据命令类型，发送不同的数据
     switch (packet.header.command) {
         case USBIP_CMD_SUBMIT: {
             cmd_submit cmd = packet.cmd_submit_data;
@@ -187,23 +206,7 @@ bool TCPSocket::sendPacket(const usbip_packet& packet) {
             }
             break;
         }
-        case USBIP_RET_SUBMIT: {
-            ret_submit ret = packet.ret_submit_data;
-            ret.seqnum = usbip_utils::htonl_wrap(ret.seqnum);
-            ret.devid = usbip_utils::htonl_wrap(ret.devid);
-            ret.direction = usbip_utils::htonl_wrap(ret.direction);
-            ret.ep = usbip_utils::htonl_wrap(ret.ep);
-            ret.status = usbip_utils::htonl_wrap(ret.status);
-            ret.actual_length = usbip_utils::htonl_wrap(ret.actual_length);
-            ret.start_frame = usbip_utils::htonl_wrap(ret.start_frame);
-            ret.number_of_packets = usbip_utils::htonl_wrap(ret.number_of_packets);
-            ret.error_count = usbip_utils::htonl_wrap(ret.error_count);
-            
-            if (!send(&ret, sizeof(ret))) {
-                return false;
-            }
-            break;
-        }
+        // 已注释掉 USBIP_RET_SUBMIT 的 case
         case USBIP_OP_REQ_DEVLIST: {
             op_devlist_request req = packet.devlist_req;
             req.version = usbip_utils::htonl_wrap(req.version);
@@ -224,12 +227,118 @@ bool TCPSocket::sendPacket(const usbip_packet& packet) {
         }
         case USBIP_OP_REP_IMPORT: {
             op_import_reply rep = packet.import_rep;
-            rep.version = usbip_utils::htonl_wrap(rep.version);
-            rep.status = usbip_utils::htonl_wrap(rep.status);
             
-            if (!send(&rep, sizeof(rep))) {
+            // 构建特定的响应格式，确保字节序正确
+            std::cout << "发送导入设备响应结构，版本=" << std::hex << rep.version
+                      << "，状态=" << rep.status << std::dec 
+                      << "，命令码=0x0003" << std::endl;
+            
+            // 确保状态码在网络字节序中为0（成功）或标准错误码
+            uint32_t status_value = rep.status;
+            
+            // 为了匹配官方客户端预期，确保状态码为0（成功）或为正确的错误值
+            if (rep.status != 0) {
+                // 如果失败，使用一个标准错误代码
+                status_value = -22; // EINVAL对应的负值，常见的错误码
+                std::cout << "设备导入失败，使用错误码: " << status_value << std::endl;
+            }
+            
+            // 1. 版本 (4字节)
+            uint32_t version_n = usbip_utils::htonl_wrap(rep.version);
+            if (!send(&version_n, sizeof(version_n))) {
                 return false;
             }
+            
+            // 2. 状态 (4字节)
+            uint32_t status_n = usbip_utils::htonl_wrap(status_value);
+            if (!send(&status_n, sizeof(status_n))) {
+                return false;
+            }
+            
+            // 3. 如果成功，发送设备信息
+            if (rep.status == 0) {
+                std::cout << "发送设备信息, 总线ID=" << rep.udev.busid << std::endl;
+                
+                // 手动构建设备信息结构，确保字节序正确
+                // 注意：path 和 busid 是字符串，保持原样
+                // 步骤 1: 发送 path (256字节)
+                if (!send(rep.udev.path, 256)) {
+                    return false;
+                }
+                
+                // 步骤 2: 发送 busid (32字节)
+                if (!send(rep.udev.busid, 32)) {
+                    return false;
+                }
+                
+                // 步骤 3: 发送 busnum (4字节)
+                uint32_t busnum_n = usbip_utils::htonl_wrap(rep.udev.busnum);
+                if (!send(&busnum_n, sizeof(busnum_n))) {
+                    return false;
+                }
+                
+                // 步骤 4: 发送 devnum (4字节)
+                uint32_t devnum_n = usbip_utils::htonl_wrap(rep.udev.devnum);
+                if (!send(&devnum_n, sizeof(devnum_n))) {
+                    return false;
+                }
+                
+                // 步骤 5: 发送 speed (4字节)
+                uint32_t speed_n = usbip_utils::htonl_wrap(rep.udev.speed);
+                if (!send(&speed_n, sizeof(speed_n))) {
+                    return false;
+                }
+                
+                // 步骤 6: 发送 idVendor (2字节)
+                uint16_t idVendor_n = usbip_utils::htons_wrap(rep.udev.idVendor);
+                if (!send(&idVendor_n, sizeof(idVendor_n))) {
+                    return false;
+                }
+                
+                // 步骤 7: 发送 idProduct (2字节)
+                uint16_t idProduct_n = usbip_utils::htons_wrap(rep.udev.idProduct);
+                if (!send(&idProduct_n, sizeof(idProduct_n))) {
+                    return false;
+                }
+                
+                // 步骤 8: 发送 bcdDevice (2字节)
+                uint16_t bcdDevice_n = usbip_utils::htons_wrap(rep.udev.bcdDevice);
+                if (!send(&bcdDevice_n, sizeof(bcdDevice_n))) {
+                    return false;
+                }
+                
+                // 步骤 9: 发送 bDeviceClass (1字节)
+                if (!send(&rep.udev.bDeviceClass, 1)) {
+                    return false;
+                }
+                
+                // 步骤 10: 发送 bDeviceSubClass (1字节)
+                if (!send(&rep.udev.bDeviceSubClass, 1)) {
+                    return false;
+                }
+                
+                // 步骤 11: 发送 bDeviceProtocol (1字节)
+                if (!send(&rep.udev.bDeviceProtocol, 1)) {
+                    return false;
+                }
+                
+                // 步骤 12: 发送 bConfigurationValue (1字节)
+                if (!send(&rep.udev.bConfigurationValue, 1)) {
+                    return false;
+                }
+                
+                // 步骤 13: 发送 bNumConfigurations (1字节)
+                if (!send(&rep.udev.bNumConfigurations, 1)) {
+                    return false;
+                }
+                
+                // 步骤 14: 发送 bNumInterfaces (1字节)
+                if (!send(&rep.udev.bNumInterfaces, 1)) {
+                    return false;
+                }
+            }
+            
+            std::cout << "导入设备响应发送完成" << std::endl;
             break;
         }
     }
@@ -256,16 +365,44 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
         return false;
     }
     
-    // 网络字节序转换为本地字节序
-    packet.header.version = usbip_utils::ntohl_wrap(header.version);
-    packet.header.command = usbip_utils::ntohl_wrap(header.command);
-    packet.header.status = usbip_utils::ntohl_wrap(header.status);
+    // 打印收到的原始头部数据（十六进制）
+    std::cout << "原始头部数据: ";
+    uint8_t* headerBytes = reinterpret_cast<uint8_t*>(&header);
+    for (size_t i = 0; i < sizeof(header); i++) {
+        std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                  << static_cast<int>(headerBytes[i]) << " ";
+    }
+    std::cout << std::dec << std::endl;
     
-    std::cout << "接收到数据包头部: 版本=" << std::hex << packet.header.version
-              << ", 命令=" << packet.header.command
-              << ", 状态=" << packet.header.status << std::dec << std::endl;
+    // 手动以正确的方式处理字节序
+    // USBIP协议的头部是两个字节一组的小端序，但整个32位是网络字节序(大端)
+    packet.header.version = (headerBytes[0] << 8) | headerBytes[1];
+    packet.header.command = (headerBytes[2] << 8) | headerBytes[3];
+    packet.header.status = 0;  // 前两个字段后面的8字节在某些官方客户端命令中可能是数据部分
     
-    // 根据命令类型接收不同的数据
+    std::cout << "正确解析结果: 版本=0x" << std::hex << packet.header.version
+              << ", 命令=0x" << packet.header.command 
+              << std::dec << std::endl;
+    
+    // 处理官方USBIP客户端的特殊命令格式
+    if (packet.header.command == USBIP_OP_REQ_IMPORT) {
+        std::cout << "检测到导入请求" << std::endl;
+        // 总线ID紧跟在头部后面，已经在前12字节接收了
+        packet.import_req.version = packet.header.version;
+        
+        // 从头部中提取总线ID（通常是第8-12字节，格式如"1-5\0"）
+        char busid[32] = {0};
+        for (int i = 0; i < std::min(32, static_cast<int>(bytesRead - 8)); i++) {
+            busid[i] = static_cast<char>(headerBytes[8 + i]);
+        }
+        
+        std::strncpy(packet.import_req.busid, busid, sizeof(packet.import_req.busid) - 1);
+        std::cout << "解析总线ID: [" << packet.import_req.busid << "]" << std::endl;
+        
+        return true;
+    }
+    
+    // 其他标准USBIP命令的处理...
     switch (packet.header.command) {
         case USBIP_CMD_SUBMIT: {
             std::cout << "接收CMD_SUBMIT数据..." << std::endl;
@@ -335,31 +472,6 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             }
             
             packet.devlist_req.version = usbip_utils::ntohl_wrap(req.version);
-            break;
-        }
-        case USBIP_OP_REQ_IMPORT: {
-            std::cout << "接收OP_REQ_IMPORT数据..." << std::endl;
-            op_import_request req;
-            if (!receive(&req, sizeof(req), bytesRead)) {
-                std::cerr << "接收OP_REQ_IMPORT数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
-                return false;
-            }
-            
-            packet.import_req.version = usbip_utils::ntohl_wrap(req.version);
-            memcpy(packet.import_req.busid, req.busid, 32);
-            break;
-        }
-        case USBIP_OP_REP_IMPORT: {
-            std::cout << "接收OP_REP_IMPORT数据..." << std::endl;
-            op_import_reply rep;
-            if (!receive(&rep, sizeof(rep), bytesRead)) {
-                std::cerr << "接收OP_REP_IMPORT数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
-                return false;
-            }
-            
-            packet.import_rep.version = usbip_utils::ntohl_wrap(rep.version);
-            packet.import_rep.status = usbip_utils::ntohl_wrap(rep.status);
-            packet.import_rep.udev = rep.udev;
             break;
         }
         case USBIP_OP_REP_DEVLIST: {
@@ -433,8 +545,55 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             break;
         }
         default: {
-            std::cerr << "未知的命令类型: " << std::hex << packet.header.command << std::dec << std::endl;
-            return false;
+            // 处理官方USBIP客户端可能发送的其他命令
+            std::cout << "收到未知命令: 0x" << std::hex << packet.header.command << std::dec << std::endl;
+            
+            // 尝试读取额外数据作为调试信息
+            std::vector<uint8_t> additionalData(256);
+            try {
+                size_t additionalBytesRead = 0;
+                if (receive(additionalData.data(), additionalData.size(), additionalBytesRead)) {
+                    std::cout << "额外读取了 " << additionalBytesRead << " 字节数据" << std::endl;
+                    
+                    // 打印所有额外读取的数据
+                    if (additionalBytesRead > 0) {
+                        std::cout << "额外数据: ";
+                        for (size_t i = 0; i < additionalBytesRead; i++) {
+                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                                      << static_cast<int>(additionalData[i]) << " ";
+                        }
+                        std::cout << std::dec << std::endl;
+                    }
+                    
+                    // 修改：对于命令0，可能是客户端的版本检查请求
+                    if (packet.header.command == 0) {
+                        std::cout << "可能是客户端版本检查请求，将尝试发送版本响应" << std::endl;
+                        
+                        // 准备一个虚拟的版本响应包
+                        usbip_packet versionReply;
+                        versionReply.header.version = USBIP_VERSION; // 使用我们的版本
+                        versionReply.header.command = 0; // 回复同样的命令
+                        versionReply.header.status = 0; // 成功状态
+                        
+                        // 添加版本相关数据
+                        versionReply.data.resize(4);
+                        uint32_t version = usbip_utils::htonl_wrap(USBIP_VERSION);
+                        memcpy(versionReply.data.data(), &version, sizeof(version));
+                        
+                        // 发送响应
+                        if (sendPacket(versionReply)) {
+                            std::cout << "版本响应发送成功" << std::endl;
+                            return true; // 继续保持连接
+                        }
+                    }
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "尝试读取额外数据时发生异常: " << e.what() << std::endl;
+            }
+            
+            // 为了兼容性，不要立即断开连接
+            std::cout << "收到不支持的命令，但将继续保持连接" << std::endl;
+            return true; // 继续处理后续请求
         }
     }
     

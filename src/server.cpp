@@ -169,8 +169,28 @@ void USBIPServer::handleClient(std::shared_ptr<TCPSocket> clientSocket) {
                 success = handleURBRequest(clientSocket, packet);
                 break;
                 
+            case 0: // 处理可能的版本检查请求
+                std::cout << "处理可能的版本检查请求" << std::endl;
+                // 准备并发送版本信息
+                {
+                    usbip_packet versionReply;
+                    versionReply.header.version = USBIP_VERSION;
+                    versionReply.header.command = 0; // 响应的命令与请求相同
+                    versionReply.header.status = 0;
+                    
+                    // 以4字节整数形式发送版本号
+                    versionReply.data.resize(4);
+                    uint32_t version = usbip_utils::htonl_wrap(USBIP_VERSION);
+                    memcpy(versionReply.data.data(), &version, sizeof(version));
+                    
+                    success = clientSocket->sendPacket(versionReply);
+                }
+                break;
+                
             default:
-                std::cerr << "未知命令: " << packet.header.command << std::endl;
+                std::cerr << "未知命令: " << std::hex << packet.header.command << std::dec << std::endl;
+                // 对于未知命令，尝试继续而不是立即断开连接
+                success = true; // 允许连接继续
                 break;
         }
         
@@ -193,6 +213,8 @@ bool USBIPServer::handleDeviceListRequest(std::shared_ptr<TCPSocket> clientSocke
     
     // 准备回复数据包
     usbip_packet reply;
+    memset(&reply, 0, sizeof(reply)); // 确保完全初始化
+    
     reply.header.version = USBIP_VERSION;
     reply.header.command = USBIP_OP_REP_DEVLIST;
     reply.header.status = 0;
@@ -201,98 +223,89 @@ bool USBIPServer::handleDeviceListRequest(std::shared_ptr<TCPSocket> clientSocke
               << ", 命令=" << reply.header.command
               << ", 状态=" << reply.header.status << std::dec << std::endl;
     
-    // 设备列表数据
-    std::vector<uint8_t> deviceData;
+    // 发送头部
+    if (!clientSocket->sendPacket(reply)) {
+        std::cerr << "发送设备列表头部失败" << std::endl;
+        return false;
+    }
     
-    // 添加设备数量
-    uint32_t numDevices = usbDevices_.size();
-    std::cout << "设备列表包含 " << numDevices << " 个设备" << std::endl;
+    // 发送设备数量 (单独发送，不是数据包的一部分)
+    uint32_t numDevices = usbip_utils::htonl_wrap(usbDevices_.size());
+    if (!clientSocket->send(&numDevices, sizeof(numDevices))) {
+        std::cerr << "发送设备数量失败" << std::endl;
+        return false;
+    }
     
-    uint32_t numDevicesNetwork = usbip_utils::htonl_wrap(numDevices);
-    deviceData.insert(deviceData.end(), (uint8_t*)&numDevicesNetwork, (uint8_t*)&numDevicesNetwork + sizeof(numDevicesNetwork));
+    std::cout << "发送 " << usbDevices_.size() << " 个设备的信息" << std::endl;
     
-    std::cout << "设备列表数据头部大小: " << deviceData.size() << " 字节" << std::endl;
-    
-    // 添加每个设备的信息
+    // 逐个发送设备信息
     std::lock_guard<std::mutex> lock(deviceMutex_);
     int deviceIndex = 0;
     for (const auto& device : usbDevices_) {
         deviceIndex++;
         
-        // 打印设备基本信息
-        std::cout << "设备 " << deviceIndex << ": VID=" << std::hex << device->getVendorID() 
-                  << ", PID=" << device->getProductID() 
-                  << ", BusID=" << std::dec << device->getBusID() 
-                  << ", 是否为存储设备: " << (device->isMassStorage() ? "是" : "否") << std::endl;
-        
-        // 设备信息
+        // 填充设备信息
         usb_device_info devInfo;
         device->fillDeviceInfo(devInfo);
         
-        size_t oldSize = deviceData.size();
+        // 转换为网络字节序
+        devInfo.busnum = usbip_utils::htonl_wrap(devInfo.busnum);
+        devInfo.devnum = usbip_utils::htonl_wrap(devInfo.devnum);
+        devInfo.speed = usbip_utils::htonl_wrap(devInfo.speed);
+        devInfo.idVendor = usbip_utils::htons_wrap(devInfo.idVendor);
+        devInfo.idProduct = usbip_utils::htons_wrap(devInfo.idProduct);
+        devInfo.bcdDevice = usbip_utils::htons_wrap(devInfo.bcdDevice);
         
-        // 将设备信息添加到数据中
-        deviceData.insert(deviceData.end(), (uint8_t*)&devInfo, (uint8_t*)&devInfo + sizeof(devInfo));
+        // 发送设备基本信息结构
+        if (!clientSocket->send(&devInfo, sizeof(devInfo))) {
+            std::cerr << "发送设备 " << deviceIndex << " 信息失败" << std::endl;
+            return false;
+        }
         
-        std::cout << "添加设备 " << deviceIndex << " 的基本信息: " << sizeof(devInfo) << " 字节" << std::endl;
-        
-        // 接口信息
+        // 发送接口数量
         uint8_t numInterfaces = devInfo.bNumInterfaces;
-        deviceData.insert(deviceData.end(), &numInterfaces, &numInterfaces + 1);
+        if (!clientSocket->send(&numInterfaces, sizeof(numInterfaces))) {
+            std::cerr << "发送设备 " << deviceIndex << " 接口数量失败" << std::endl;
+            return false;
+        }
         
-        std::cout << "设备 " << deviceIndex << " 有 " << (int)numInterfaces << " 个接口" << std::endl;
+        std::cout << "发送设备 " << deviceIndex << " 的 " << (int)numInterfaces << " 个接口信息" << std::endl;
         
-        // 每个接口的信息
+        // 发送每个接口的信息
         for (uint8_t i = 0; i < numInterfaces; i++) {
-            // 接口类，子类和协议（使用通用值）
-            uint8_t interfaceClass = (device->isMassStorage()) ? USB_CLASS_MASS_STORAGE : 0;
-            uint8_t interfaceSubClass = 0;
-            uint8_t interfaceProtocol = 0;
+            // 接口描述 (4字节: 类,子类,协议,填充)
+            uint8_t interfaceData[4] = {
+                static_cast<uint8_t>((device->isMassStorage()) ? USB_CLASS_MASS_STORAGE : 0), // 类
+                0, // 子类
+                0, // 协议
+                0  // 填充字节
+            };
             
-            deviceData.push_back(interfaceClass);
-            deviceData.push_back(interfaceSubClass);
-            deviceData.push_back(interfaceProtocol);
-            
-            // 填充保留字段
-            uint8_t padding = 0;
-            deviceData.push_back(padding);
-            
-            std::cout << "接口 " << (int)i << ": 类=" << (int)interfaceClass 
-                      << ", 子类=" << (int)interfaceSubClass
-                      << ", 协议=" << (int)interfaceProtocol << std::endl;
+            if (!clientSocket->send(interfaceData, sizeof(interfaceData))) {
+                std::cerr << "发送设备 " << deviceIndex << " 接口 " << (int)i << " 信息失败" << std::endl;
+                return false;
+            }
         }
         
-        std::cout << "设备 " << deviceIndex << " 添加了 " << (deviceData.size() - oldSize) << " 字节数据" << std::endl;
+        std::cout << "设备 " << deviceIndex << " 信息发送成功" << std::endl;
     }
     
-    // 设置回复数据
-    reply.data = deviceData;
-    
-    std::cout << "设备列表总数据大小: " << deviceData.size() << " 字节" << std::endl;
-    
-    // 打印前40个字节的十六进制表示（如果可用）
-    if (!deviceData.empty()) {
-        std::cout << "设备列表数据前 " << std::min(40, static_cast<int>(deviceData.size())) << " 字节: ";
-        for (int i = 0; i < std::min(40, static_cast<int>(deviceData.size())); i++) {
-            std::cout << std::hex << std::setfill('0') << std::setw(2) 
-                      << static_cast<int>(deviceData[i]) << " ";
-        }
-        std::cout << std::dec << std::endl;
-    }
-    
-    // 发送回复
-    std::cout << "开始发送设备列表响应..." << std::endl;
-    bool success = clientSocket->sendPacket(reply);
-    std::cout << "设备列表响应发送" << (success ? "成功" : "失败") << std::endl;
-    return success;
+    std::cout << "设备列表响应发送成功" << std::endl;
+    return true;
 }
 
 bool USBIPServer::handleImportRequest(std::shared_ptr<TCPSocket> clientSocket, const usbip_packet& packet) {
     std::string busID(packet.import_req.busid);
     std::cout << "收到导入设备请求: " << busID << std::endl;
     
+    // 打印详细的请求数据进行调试
+    std::cout << "导入请求详情: 版本=0x" << std::hex << packet.header.version << std::dec 
+              << ", 总线ID=[" << packet.import_req.busid << "]" << std::endl;
+    
     // 准备回复数据包
     usbip_packet reply;
+    memset(&reply, 0, sizeof(reply)); // 确保所有字段都初始化为0
+    
     reply.header.version = USBIP_VERSION;
     reply.header.command = USBIP_OP_REP_IMPORT;
     reply.header.status = 0;
@@ -303,7 +316,11 @@ bool USBIPServer::handleImportRequest(std::shared_ptr<TCPSocket> clientSocket, c
     {
         std::lock_guard<std::mutex> lock(deviceMutex_);
         for (const auto& device : usbDevices_) {
-            if (device->getBusID() == busID) {
+            std::string deviceBusID = device->getBusID();
+            std::cout << "检查设备: " << deviceBusID << std::endl;
+            
+            if (deviceBusID == busID) {
+                std::cout << "找到匹配设备!" << std::endl;
                 targetDevice = device;
                 break;
             }
@@ -312,23 +329,47 @@ bool USBIPServer::handleImportRequest(std::shared_ptr<TCPSocket> clientSocket, c
     
     if (!targetDevice) {
         std::cerr << "找不到请求的设备: " << busID << std::endl;
-        reply.header.status = 1; // 错误
+        
+        // 为失败情况准备响应
+        reply.import_rep.version = USBIP_VERSION;
+        reply.import_rep.status = -19; // -ENODEV (设备不存在) 的负值
+        
+        std::cout << "发送导入失败响应，状态=-19 (ENODEV)" << std::endl;
         return clientSocket->sendPacket(reply);
     }
     
-    // 设置回复状态为成功
-    reply.header.status = 0;
+    // 设置回复信息
+    reply.import_rep.version = USBIP_VERSION;
+    reply.import_rep.status = 0; // 成功
     
     // 填充设备信息
-    targetDevice->fillDeviceInfo(reply.import_rep.udev);
-    
-    // 将设备添加到已导出列表
-    {
+    bool fillSuccess = targetDevice->fillDeviceInfo(reply.import_rep.udev);
+    if (!fillSuccess) {
+        std::cerr << "填充设备信息失败" << std::endl;
+        reply.import_rep.status = -22; // -EINVAL (参数无效) 的负值
+    } else {
+        // 将设备添加到已导出列表
         std::lock_guard<std::mutex> lock(deviceMutex_);
         exportedDevices_[busID] = targetDevice;
+        
+        std::cout << "成功导出设备 " << busID << std::endl;
+        
+        // 打印设备信息，便于调试
+        std::cout << "===设备详细信息===" << std::endl;
+        std::cout << "设备ID: " << reply.import_rep.udev.busid << std::endl;
+        std::cout << "路径: " << reply.import_rep.udev.path << std::endl;
+        std::cout << "总线号: " << reply.import_rep.udev.busnum << std::endl;
+        std::cout << "设备号: " << reply.import_rep.udev.devnum << std::endl;
+        std::cout << "速度: " << reply.import_rep.udev.speed << std::endl;
+        std::cout << "厂商ID: 0x" << std::hex << reply.import_rep.udev.idVendor << std::endl;
+        std::cout << "产品ID: 0x" << reply.import_rep.udev.idProduct << std::dec << std::endl;
+        std::cout << "设备类: " << static_cast<int>(reply.import_rep.udev.bDeviceClass) << std::endl;
+        std::cout << "接口数: " << static_cast<int>(reply.import_rep.udev.bNumInterfaces) << std::endl;
+        std::cout << "===================" << std::endl;
     }
     
-    // 发送回复
+    // 确保发送正确格式的响应
+    std::cout << "发送导入设备响应，状态=" << reply.import_rep.status << std::endl;
     return clientSocket->sendPacket(reply);
 }
 

@@ -19,7 +19,7 @@
 #define USBIP_OP_REQ_DEVLIST    0x8005
 #define USBIP_OP_REP_DEVLIST    0x0005
 #define USBIP_OP_REQ_IMPORT     0x8003
-#define USBIP_OP_REP_IMPORT     0x0006
+#define USBIP_OP_REP_IMPORT     0x0003
 
 // 方向
 #define USBIP_DIR_OUT 0
