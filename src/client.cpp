@@ -11,8 +11,7 @@
 #include <ctime>
 
 // VHCI相关常量和结构体定义
-#define USBIP_VHCI_PATH "/dev/vhci"  // 主要VHCI设备路径
-#define USB_VHCI_PATH "/dev/usb-vhci/usb-vhci"  // 备用VHCI设备路径
+#define USBIP_VHCI_PATH "/dev/vhci"  // 官方VHCI设备路径
 
 // USB速度常量
 #define USB_SPEED_UNKNOWN      0
@@ -21,9 +20,10 @@
 #define USB_SPEED_HIGH         3
 #define USB_SPEED_SUPER        4
 
-// 自定义IOCTL命令，可能需要根据您的系统调整
-#define USBIP_VHCI_IOCATTACH _IOW('U', 0, struct usbip_vhci_device)
-#define USB_VHCI_IOCATTACH _IOW('U', 0, struct usb_vhci_device_info)
+// 更新IOCTL命令，使用更标准的Linux值
+// 对于较新的Linux内核，与vhci_hcd模块一起使用
+#define USBIP_VHCI_IOCATTACH  _IOW('U', 0x00, struct usbip_vhci_device)
+#define USBIP_VHCI_IOCGIVEBACK _IOW('U', 0x01, struct vhci_response)
 
 // USBIP设备连接结构
 struct usbip_vhci_device {
@@ -35,19 +35,6 @@ struct usbip_vhci_device {
     uint16_t devnum;
     uint32_t vendor;
     uint32_t product;
-};
-
-// USB-VHCI设备连接结构
-struct usb_vhci_device_info {
-    uint8_t port;
-    uint8_t status;
-    uint32_t speed;
-    uint16_t vendor;
-    uint16_t product;
-    uint16_t device;
-    uint8_t dev_class;
-    uint8_t dev_subclass;
-    uint8_t dev_protocol;
 };
 
 // VHCI设备实现
@@ -103,109 +90,64 @@ bool VHCIDevice::create(const USBDeviceInfo& deviceInfo) {
     // 记录设备信息
     deviceInfo_ = deviceInfo;
     
-    // 尝试打开主要的VHCI设备
+    // 尝试打开官方的VHCI设备
     fd_ = open(USBIP_VHCI_PATH, O_RDWR);
     if (fd_ < 0) {
-        std::cerr << "打开主要VHCI设备失败: " << strerror(errno) << std::endl;
+        std::cerr << "打开VHCI设备失败: " << strerror(errno) << std::endl;
         
-        // 尝试打开备用USB-VHCI设备
-        fd_ = open(USB_VHCI_PATH, O_RDWR);
-        if (fd_ < 0) {
-            std::cerr << "打开备用USB-VHCI设备也失败: " << strerror(errno) << std::endl;
-            
-            // 检查设备文件是否存在及其权限
-            struct stat st;
-            if (stat(USBIP_VHCI_PATH, &st) == 0) {
-                std::cerr << USBIP_VHCI_PATH << " 文件存在，但可能没有足够权限访问，请确保以root权限运行" << std::endl;
-            } else {
-                std::cerr << USBIP_VHCI_PATH << " 文件不存在，请确保已安装并加载正确的内核模块" << std::endl;
-            }
-            
-            return false;  // 不能模拟，必须创建真实设备
+        // 检查设备文件是否存在及其权限
+        struct stat st;
+        if (stat(USBIP_VHCI_PATH, &st) == 0) {
+            std::cerr << USBIP_VHCI_PATH << " 文件存在，但可能没有足够权限访问，请确保以root权限运行" << std::endl;
         } else {
-            std::cout << "成功打开备用USB-VHCI设备" << std::endl;
+            std::cerr << USBIP_VHCI_PATH << " 文件不存在，请确保已安装并加载正确的内核模块" << std::endl;
         }
+        
+        return false;
     } else {
-        std::cout << "成功打开主要VHCI设备" << std::endl;
+        std::cout << "成功打开VHCI设备" << std::endl;
     }
     
-    // 根据打开的设备类型选择不同的IOCTL命令
-    bool success = false;
+    // 准备USBIP_VHCI设备连接参数
+    struct usbip_vhci_device attach_data;
+    memset(&attach_data, 0, sizeof(attach_data));
     
-    // 尝试使用USBIP_VHCI连接设备（针对/dev/vhci）
-    if (fd_ >= 0) {
-        // 准备USBIP_VHCI设备连接参数
-        struct usbip_vhci_device attach_data;
-        memset(&attach_data, 0, sizeof(attach_data));
+    attach_data.port = 0;  // 使用第一个可用端口
+    attach_data.status = 1; // 1表示已连接
+    attach_data.speed = USB_SPEED_HIGH;  // USB 2.0高速
+    attach_data.devid = deviceInfo.idVendor << 16 | deviceInfo.idProduct;  // 设备ID
+    attach_data.busnum = 1; // 总线号为1
+    attach_data.devnum = 2; // 设备号为2
+    attach_data.vendor = deviceInfo.idVendor;
+    attach_data.product = deviceInfo.idProduct;
+    
+    std::cout << "尝试使用USBIP_VHCI_IOCATTACH连接设备..." << std::endl;
+    int ret = ioctl(fd_, USBIP_VHCI_IOCATTACH, &attach_data);
+    
+    if (ret < 0) {
+        std::cerr << "USBIP_VHCI_IOCATTACH失败: " << strerror(errno) << " (错误码: " << errno << ")" << std::endl;
         
-        attach_data.port = 0;  // 使用第一个可用端口
-        attach_data.status = 1; // 1表示已连接
-        attach_data.speed = 2;  // USB 2.0高速
-        attach_data.devid = 1;  // 设备ID为1
-        attach_data.busnum = 1; // 总线号为1
-        attach_data.devnum = 2; // 设备号为2
-        attach_data.vendor = deviceInfo.idVendor;
-        attach_data.product = deviceInfo.idProduct;
+        // 尝试发送基本的调试信息到驱动
+        int debug_cmd = _IO('U', 0xFF);  // 自定义调试命令
+        ret = ioctl(fd_, debug_cmd, NULL);
+        std::cerr << "尝试调试命令结果: " << ret << ", " << strerror(errno) << std::endl;
         
-        std::cout << "尝试使用USBIP_VHCI_IOCATTACH连接设备..." << std::endl;
-        int ret = ioctl(fd_, USBIP_VHCI_IOCATTACH, &attach_data);
-        
-        if (ret < 0) {
-            std::cerr << "USBIP_VHCI_IOCATTACH失败: " << strerror(errno) << std::endl;
-            
-            // 尝试使用USB_VHCI连接设备（针对/dev/usb-vhci/usb-vhci）
-            struct usb_vhci_device_info vhci_data;
-            memset(&vhci_data, 0, sizeof(vhci_data));
-            
-            vhci_data.port = 0;  // 使用第一个可用端口
-            vhci_data.status = 1; // 1表示已连接
-            vhci_data.speed = 2;  // USB 2.0高速
-            vhci_data.vendor = deviceInfo.idVendor;
-            vhci_data.product = deviceInfo.idProduct;
-            vhci_data.device = 0x0100;  // 设备版本1.0
-            vhci_data.dev_class = deviceInfo.bDeviceClass;
-            vhci_data.dev_subclass = 0;
-            vhci_data.dev_protocol = 0;
-            
-            std::cout << "尝试使用USB_VHCI_IOCATTACH连接设备..." << std::endl;
-            ret = ioctl(fd_, USB_VHCI_IOCATTACH, &vhci_data);
-            
-            if (ret < 0) {
-                std::cerr << "USB_VHCI_IOCATTACH也失败: " << strerror(errno) << std::endl;
-                
-                // 尝试发送基本的调试信息到驱动
-                int debug_cmd = _IO('U', 0xFF);  // 自定义调试命令
-                ret = ioctl(fd_, debug_cmd, NULL);
-                std::cerr << "尝试调试命令结果: " << ret << ", " << strerror(errno) << std::endl;
-                
-                close(fd_);
-                fd_ = -1;
-                return false;
-            } else {
-                success = true;
-                std::cout << "USB_VHCI_IOCATTACH成功连接设备" << std::endl;
-            }
-        } else {
-            success = true;
-            std::cout << "USBIP_VHCI_IOCATTACH成功连接设备" << std::endl;
-        }
+        close(fd_);
+        fd_ = -1;
+        return false;
     }
     
-    if (success) {
-        std::cout << "成功创建虚拟USB设备: " << deviceInfo.busid << std::endl;
-        std::cout << "  厂商ID: 0x" << std::hex << deviceInfo.idVendor << std::endl;
-        std::cout << "  产品ID: 0x" << std::hex << deviceInfo.idProduct << std::dec << std::endl;
-        if (deviceInfo.isMassStorage) {
-            std::cout << "  设备类型: 大容量存储设备" << std::endl;
-        } else {
-            std::cout << "  设备类型: 类代码 0x" << std::hex << static_cast<int>(deviceInfo.bDeviceClass) << std::dec << std::endl;
-        }
-        
-        isCreated_ = true;
-        return true;
+    std::cout << "成功创建虚拟USB设备: " << deviceInfo.busid << std::endl;
+    std::cout << "  厂商ID: 0x" << std::hex << deviceInfo.idVendor << std::endl;
+    std::cout << "  产品ID: 0x" << std::hex << deviceInfo.idProduct << std::dec << std::endl;
+    if (deviceInfo.isMassStorage) {
+        std::cout << "  设备类型: 大容量存储设备" << std::endl;
+    } else {
+        std::cout << "  设备类型: 类代码 0x" << std::hex << static_cast<int>(deviceInfo.bDeviceClass) << std::dec << std::endl;
     }
     
-    return false;
+    isCreated_ = true;
+    return true;
 }
 
 void VHCIDevice::destroy() {
@@ -273,49 +215,19 @@ bool VHCIDevice::handleURBResponse(const usbip_packet& packet) {
         memcpy(resp->data, packet.data.data(), packet.data.size());
     }
     
-    // 尝试使用不同的IOCTL命令
-    bool success = false;
-    const unsigned int USBIP_VHCI_IOCGIVEBACK = _IOW('U', 1, struct vhci_response);
-    const unsigned int USB_VHCI_IOCGIVEBACK = _IOW('U', 1, struct vhci_response);
-    
     // 尝试USBIP_VHCI_IOCGIVEBACK命令
     std::cout << "尝试使用USBIP_VHCI_IOCGIVEBACK命令..." << std::endl;
     int ret = ioctl(fd_, USBIP_VHCI_IOCGIVEBACK, resp);
     if (ret < 0) {
-        std::cerr << "USBIP_VHCI_IOCGIVEBACK失败: " << strerror(errno) << std::endl;
-        
-        // 尝试USB_VHCI_IOCGIVEBACK命令
-        std::cout << "尝试使用USB_VHCI_IOCGIVEBACK命令..." << std::endl;
-        ret = ioctl(fd_, USB_VHCI_IOCGIVEBACK, resp);
-        if (ret < 0) {
-            std::cerr << "USB_VHCI_IOCGIVEBACK也失败: " << strerror(errno) << std::endl;
-            
-            // 尝试一些其他可能的IOCTL命令
-            const unsigned int ALT_USBIP_IOCTL = _IOW('U', 0x12, struct vhci_response);
-            std::cout << "尝试使用备用IOCTL命令..." << std::endl;
-            ret = ioctl(fd_, ALT_USBIP_IOCTL, resp);
-            if (ret < 0) {
-                std::cerr << "所有IOCTL命令都失败，无法发送URB响应" << std::endl;
-                free(resp);
-                return false;
-            } else {
-                success = true;
-            }
-        } else {
-            success = true;
-        }
-    } else {
-        success = true;
+        std::cerr << "USBIP_VHCI_IOCGIVEBACK失败: " << strerror(errno) << " (错误码: " << errno << ")" << std::endl;
+        free(resp);
+        return false;
     }
     
     // 释放内存
     free(resp);
-    
-    if (success) {
-        std::cout << "成功将URB响应发送到VHCI驱动" << std::endl;
-    }
-    
-    return success;
+    std::cout << "成功将URB响应发送到VHCI驱动" << std::endl;
+    return true;
 }
 
 // USBIPClient实现
