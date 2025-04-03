@@ -311,6 +311,11 @@ bool USBIPServer::handleImportRequest(std::shared_ptr<TCPSocket> clientSocket, c
     reply.header.command = USBIP_OP_REP_IMPORT;
     reply.header.status = 0;
     
+    // 初始化导入响应结构体，避免未初始化的值
+    reply.import_rep.version = USBIP_VERSION;
+    reply.import_rep.status = 0;
+    memset(&reply.import_rep.udev, 0, sizeof(reply.import_rep.udev));
+    
     // 查找请求的设备
     std::shared_ptr<libusb::USBDevice> targetDevice = nullptr;
     
@@ -349,6 +354,24 @@ bool USBIPServer::handleImportRequest(std::shared_ptr<TCPSocket> clientSocket, c
         std::cerr << "填充设备信息失败" << std::endl;
         reply.import_rep.status = -22; // -EINVAL (参数无效) 的负值
     } else {
+        // 为确保设备信息有效，再次检查关键字段
+        if (reply.import_rep.udev.busid[0] == '\0') {
+            strncpy(reply.import_rep.udev.busid, busID.c_str(), sizeof(reply.import_rep.udev.busid) - 1);
+        }
+        
+        if (reply.import_rep.udev.idVendor == 0 || reply.import_rep.udev.idProduct == 0) {
+            reply.import_rep.udev.idVendor = targetDevice->getVendorID();
+            reply.import_rep.udev.idProduct = targetDevice->getProductID();
+        }
+        
+        // 为应答设置网络字节序
+        reply.import_rep.udev.busnum = usbip_utils::htonl_wrap(reply.import_rep.udev.busnum);
+        reply.import_rep.udev.devnum = usbip_utils::htonl_wrap(reply.import_rep.udev.devnum);
+        reply.import_rep.udev.speed = usbip_utils::htonl_wrap(reply.import_rep.udev.speed);
+        reply.import_rep.udev.idVendor = usbip_utils::htons_wrap(reply.import_rep.udev.idVendor);
+        reply.import_rep.udev.idProduct = usbip_utils::htons_wrap(reply.import_rep.udev.idProduct);
+        reply.import_rep.udev.bcdDevice = usbip_utils::htons_wrap(reply.import_rep.udev.bcdDevice);
+        
         // 将设备添加到已导出列表
         std::lock_guard<std::mutex> lock(deviceMutex_);
         exportedDevices_[busID] = targetDevice;
@@ -359,18 +382,21 @@ bool USBIPServer::handleImportRequest(std::shared_ptr<TCPSocket> clientSocket, c
         std::cout << "===设备详细信息===" << std::endl;
         std::cout << "设备ID: " << reply.import_rep.udev.busid << std::endl;
         std::cout << "路径: " << reply.import_rep.udev.path << std::endl;
-        std::cout << "总线号: " << reply.import_rep.udev.busnum << std::endl;
-        std::cout << "设备号: " << reply.import_rep.udev.devnum << std::endl;
-        std::cout << "速度: " << reply.import_rep.udev.speed << std::endl;
-        std::cout << "厂商ID: 0x" << std::hex << reply.import_rep.udev.idVendor << std::endl;
-        std::cout << "产品ID: 0x" << reply.import_rep.udev.idProduct << std::dec << std::endl;
+        std::cout << "总线号: " << usbip_utils::ntohl_wrap(reply.import_rep.udev.busnum) << std::endl;
+        std::cout << "设备号: " << usbip_utils::ntohl_wrap(reply.import_rep.udev.devnum) << std::endl;
+        std::cout << "速度: " << usbip_utils::ntohl_wrap(reply.import_rep.udev.speed) << std::endl;
+        std::cout << "厂商ID: 0x" << std::hex << usbip_utils::ntohs_wrap(reply.import_rep.udev.idVendor) << std::endl;
+        std::cout << "产品ID: 0x" << usbip_utils::ntohs_wrap(reply.import_rep.udev.idProduct) << std::dec << std::endl;
         std::cout << "设备类: " << static_cast<int>(reply.import_rep.udev.bDeviceClass) << std::endl;
         std::cout << "接口数: " << static_cast<int>(reply.import_rep.udev.bNumInterfaces) << std::endl;
         std::cout << "===================" << std::endl;
     }
     
+    // 确保回复状态被设置为网络字节序
+    reply.import_rep.status = usbip_utils::htonl_wrap(reply.import_rep.status);
+    
     // 确保发送正确格式的响应
-    std::cout << "发送导入设备响应，状态=" << reply.import_rep.status << std::endl;
+    std::cout << "发送导入设备响应，状态=" << usbip_utils::ntohl_wrap(reply.import_rep.status) << std::endl;
     return clientSocket->sendPacket(reply);
 }
 
