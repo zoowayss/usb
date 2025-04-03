@@ -71,11 +71,18 @@ private:
     bool checkMassStorageInterface();
 };
 
-// USB设备管理器类
+// USB设备管理器类 - 单例模式
 class USBDeviceManager {
 public:
-    USBDeviceManager();
-    ~USBDeviceManager();
+    // 获取单例实例
+    static USBDeviceManager& getInstance() {
+        static USBDeviceManager instance;
+        return instance;
+    }
+    
+    // 禁止拷贝和赋值
+    USBDeviceManager(const USBDeviceManager&) = delete;
+    USBDeviceManager& operator=(const USBDeviceManager&) = delete;
     
     // 初始化libusb库
     bool init();
@@ -91,6 +98,10 @@ public:
     std::shared_ptr<USBDevice> findDeviceByVendorProduct(uint16_t vendorID, uint16_t productID);
     
 private:
+    // 私有构造函数和析构函数
+    USBDeviceManager();
+    ~USBDeviceManager();
+    
     libusb_context* context_;
     bool isInitialized_;
 };

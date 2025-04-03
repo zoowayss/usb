@@ -84,6 +84,10 @@ void USBIPServer::stop() {
         std::lock_guard<std::mutex> lock(deviceMutex_);
         usbDevices_.clear();
         exportedDevices_.clear();
+        
+        // 清理libusb资源
+        libusb::USBDeviceManager::getInstance().cleanup();
+        
         std::cout << "服务端已停止" << std::endl;
     }
 }
@@ -91,8 +95,8 @@ void USBIPServer::stop() {
 bool USBIPServer::scanUSBDevices() {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     
-    // 创建USB设备管理器
-    libusb::USBDeviceManager deviceManager;
+    // 使用单例获取USB设备管理器
+    auto& deviceManager = libusb::USBDeviceManager::getInstance();
     if (!deviceManager.init()) {
         std::cerr << "初始化USB设备管理器失败" << std::endl;
         return false;
