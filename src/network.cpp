@@ -437,7 +437,6 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             }
             break;
         }
-        case USBIP_RET_SUBMIT:  // 0x0003，与USBIP_OP_REP_IMPORT相同
         case USBIP_OP_REP_IMPORT: {
             // 根据上下文判断实际命令类型
             if (packet.header.command == 0x0003) {
