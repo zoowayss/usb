@@ -52,11 +52,15 @@ public:
     bool isCreated() const override;
     bool handleURBResponse(const usbip_packet& packet) override;
     
+    // 设置服务器地址
+    void setServerHost(const std::string& host) { serverHost_ = host; }
+    
 private:
     int fd_;   // VHCI设备文件描述符
     bool isCreated_;
     USBDeviceInfo deviceInfo_;
     int port_;  // vhci端口号
+    std::string serverHost_; // 服务器地址
     
     // 检查并加载vhci_hcd模块
     bool loadVHCIModule();
