@@ -56,9 +56,13 @@ private:
     int fd_;   // VHCI设备文件描述符
     bool isCreated_;
     USBDeviceInfo deviceInfo_;
+    int port_;  // vhci端口号
     
     // 检查并加载vhci_hcd模块
     bool loadVHCIModule();
+    
+    // 查找可用的端口号
+    int findAvailablePort();
 };
 
 class USBIPClient {
