@@ -183,6 +183,8 @@ bool USBIPClient::getDeviceList() {
         return false;
     }
     
+    std::cout << "已发送设备列表请求，等待响应..." << std::endl;
+    
     // 接收响应
     usbip_packet reply;
     if (!client_->receivePacket(reply)) {
@@ -190,9 +192,21 @@ bool USBIPClient::getDeviceList() {
         return false;
     }
     
+    std::cout << "收到响应数据包，大小: " << reply.data.size() << " 字节" << std::endl;
+    std::cout << "响应头部: 版本=" << std::hex << reply.header.version 
+              << ", 命令=" << reply.header.command 
+              << ", 状态=" << reply.header.status << std::dec << std::endl;
+    
     // 检查响应类型
     if (reply.header.command != USBIP_OP_REP_DEVLIST) {
-        std::cerr << "收到错误的响应类型: " << reply.header.command << std::endl;
+        std::cerr << "收到错误的响应类型: " << std::hex << reply.header.command 
+                  << "，期望: " << USBIP_OP_REP_DEVLIST << std::dec << std::endl;
+        return false;
+    }
+    
+    // 检查状态码
+    if (reply.header.status != 0) {
+        std::cerr << "响应状态码错误: " << reply.header.status << std::endl;
         return false;
     }
     
@@ -202,7 +216,17 @@ bool USBIPClient::getDeviceList() {
     
     // 解析设备数量
     if (reply.data.size() < sizeof(uint32_t)) {
-        std::cerr << "设备列表数据不完整" << std::endl;
+        std::cerr << "设备列表数据不完整: 需要至少 " << sizeof(uint32_t) 
+                  << " 字节来包含设备数量，但只收到 " << reply.data.size() << " 字节" << std::endl;
+        
+        // 打印收到的原始数据（十六进制）
+        std::cerr << "收到的原始数据: ";
+        for (size_t i = 0; i < reply.data.size() && i < 32; ++i) {
+            std::cerr << std::hex << std::setw(2) << std::setfill('0') 
+                      << static_cast<int>(reply.data[i]) << " ";
+        }
+        std::cerr << std::dec << std::endl;
+        
         return false;
     }
     
@@ -210,7 +234,21 @@ bool USBIPClient::getDeviceList() {
     memcpy(&numDevices, reply.data.data(), sizeof(numDevices));
     numDevices = usbip_utils::ntohl_wrap(numDevices);
     
-    std::cout << "发现 " << numDevices << " 个设备" << std::endl;
+    std::cout << "设备列表中包含 " << numDevices << " 个设备" << std::endl;
+    
+    // 计算预期的数据大小
+    size_t expectedSize = sizeof(uint32_t); // 设备数量字段
+    
+    // 检查数据是否足够
+    if (numDevices > 0) {
+        expectedSize += numDevices * sizeof(usb_device_info); // 每个设备的基本信息
+        
+        if (reply.data.size() < expectedSize) {
+            std::cerr << "设备信息数据不完整: 需要至少 " << expectedSize 
+                      << " 字节，但只收到 " << reply.data.size() << " 字节" << std::endl;
+            return false;
+        }
+    }
     
     // 解析每个设备信息
     size_t offset = sizeof(uint32_t);
@@ -218,6 +256,8 @@ bool USBIPClient::getDeviceList() {
         usb_device_info devInfo;
         memcpy(&devInfo, reply.data.data() + offset, sizeof(devInfo));
         offset += sizeof(devInfo);
+        
+        std::cout << "解析设备 " << i + 1 << " 信息，偏移量: " << offset << std::endl;
         
         // 创建设备信息对象
         USBDeviceInfo info;
@@ -234,6 +274,16 @@ bool USBIPClient::getDeviceList() {
         // 跳过接口信息
         if (offset < reply.data.size()) {
             uint8_t numInterfaces = reply.data[offset++];
+            std::cout << "设备 " << i + 1 << " 有 " << static_cast<int>(numInterfaces) << " 个接口" << std::endl;
+            
+            // 检查是否有足够的数据来包含所有接口
+            size_t interfacesSize = numInterfaces * 4; // 每个接口4字节
+            if (offset + interfacesSize > reply.data.size()) {
+                std::cerr << "接口信息数据不完整: 需要 " << interfacesSize 
+                          << " 字节，但只剩余 " << (reply.data.size() - offset) << " 字节" << std::endl;
+                // 继续处理已有数据，不中断
+            }
+            
             // 每个接口有4个字节
             offset += numInterfaces * 4;
         }
@@ -243,7 +293,13 @@ bool USBIPClient::getDeviceList() {
                   << ", PID:" << info.idProduct << std::dec << ")" << std::endl;
     }
     
-    return !deviceList_.empty();
+    if (deviceList_.empty()) {
+        std::cerr << "未找到可用设备" << std::endl;
+        return false;
+    }
+    
+    std::cout << "成功解析设备列表，找到 " << deviceList_.size() << " 个设备" << std::endl;
+    return true;
 }
 
 bool USBIPClient::importDevice(const std::string& busid) {

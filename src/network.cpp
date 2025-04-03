@@ -227,19 +227,28 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
     usbip_header header;
     size_t bytesRead;
     
+    std::cout << "准备接收数据包头部..." << std::endl;
     if (!receive(&header, sizeof(header), bytesRead)) {
+        std::cerr << "接收数据包头部失败，实际接收 " << bytesRead << " 字节" << std::endl;
         return false;
     }
     
+    // 网络字节序转换为本地字节序
     packet.header.version = usbip_utils::ntohl_wrap(header.version);
     packet.header.command = usbip_utils::ntohl_wrap(header.command);
     packet.header.status = usbip_utils::ntohl_wrap(header.status);
     
+    std::cout << "接收到数据包头部: 版本=" << std::hex << packet.header.version
+              << ", 命令=" << packet.header.command
+              << ", 状态=" << packet.header.status << std::dec << std::endl;
+    
     // 根据命令类型接收不同的数据
     switch (packet.header.command) {
         case USBIP_CMD_SUBMIT: {
+            std::cout << "接收CMD_SUBMIT数据..." << std::endl;
             cmd_submit cmd;
             if (!receive(&cmd, sizeof(cmd), bytesRead)) {
+                std::cerr << "接收CMD_SUBMIT数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
                 return false;
             }
             
@@ -256,16 +265,20 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             
             // 如果是OUT方向，接收数据
             if (packet.cmd_submit_data.direction == USBIP_DIR_OUT && packet.cmd_submit_data.transfer_buffer_length > 0) {
+                std::cout << "接收CMD_SUBMIT OUT数据，大小: " << packet.cmd_submit_data.transfer_buffer_length << " 字节" << std::endl;
                 packet.data.resize(packet.cmd_submit_data.transfer_buffer_length);
                 if (!receive(packet.data.data(), packet.data.size(), bytesRead)) {
+                    std::cerr << "接收CMD_SUBMIT OUT数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
                     return false;
                 }
             }
             break;
         }
         case USBIP_RET_SUBMIT: {
+            std::cout << "接收RET_SUBMIT数据..." << std::endl;
             ret_submit ret;
             if (!receive(&ret, sizeof(ret), bytesRead)) {
+                std::cerr << "接收RET_SUBMIT数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
                 return false;
             }
             
@@ -281,16 +294,20 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             
             // 如果是IN方向，接收数据
             if (packet.ret_submit_data.direction == USBIP_DIR_IN && packet.ret_submit_data.actual_length > 0) {
+                std::cout << "接收RET_SUBMIT IN数据，大小: " << packet.ret_submit_data.actual_length << " 字节" << std::endl;
                 packet.data.resize(packet.ret_submit_data.actual_length);
                 if (!receive(packet.data.data(), packet.data.size(), bytesRead)) {
+                    std::cerr << "接收RET_SUBMIT IN数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
                     return false;
                 }
             }
             break;
         }
         case USBIP_OP_REQ_DEVLIST: {
+            std::cout << "接收OP_REQ_DEVLIST数据..." << std::endl;
             op_devlist_request req;
             if (!receive(&req, sizeof(req), bytesRead)) {
+                std::cerr << "接收OP_REQ_DEVLIST数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
                 return false;
             }
             
@@ -298,8 +315,10 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             break;
         }
         case USBIP_OP_REQ_IMPORT: {
+            std::cout << "接收OP_REQ_IMPORT数据..." << std::endl;
             op_import_request req;
             if (!receive(&req, sizeof(req), bytesRead)) {
+                std::cerr << "接收OP_REQ_IMPORT数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
                 return false;
             }
             
@@ -308,8 +327,10 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             break;
         }
         case USBIP_OP_REP_IMPORT: {
+            std::cout << "接收OP_REP_IMPORT数据..." << std::endl;
             op_import_reply rep;
             if (!receive(&rep, sizeof(rep), bytesRead)) {
+                std::cerr << "接收OP_REP_IMPORT数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
                 return false;
             }
             
@@ -317,6 +338,80 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             packet.import_rep.status = usbip_utils::ntohl_wrap(rep.status);
             packet.import_rep.udev = rep.udev;
             break;
+        }
+        case USBIP_OP_REP_DEVLIST: {
+            std::cout << "接收OP_REP_DEVLIST数据..." << std::endl;
+            
+            // 首先接收设备数量（4字节）
+            uint32_t numDevices = 0;
+            if (!receive(&numDevices, sizeof(numDevices), bytesRead)) {
+                std::cerr << "接收设备数量失败，实际接收 " << bytesRead << " 字节" << std::endl;
+                return false;
+            }
+            
+            numDevices = usbip_utils::ntohl_wrap(numDevices);
+            std::cout << "设备列表包含 " << numDevices << " 个设备" << std::endl;
+            
+            // 计算需要接收的数据总大小
+            // 对于每个设备: usb_device_info + 1字节接口数量 + 接口数量*4字节
+            size_t totalSize = sizeof(uint32_t); // 设备数量
+            packet.data.resize(totalSize);
+            memcpy(packet.data.data(), &numDevices, sizeof(numDevices));
+            
+            // 如果有设备，继续接收设备信息
+            if (numDevices > 0) {
+                // 尝试读取设备信息并动态调整缓冲区大小
+                for (uint32_t i = 0; i < numDevices; i++) {
+                    // 接收设备基本信息
+                    usb_device_info devInfo;
+                    if (!receive(&devInfo, sizeof(devInfo), bytesRead)) {
+                        std::cerr << "接收设备 " << i+1 << " 信息失败，实际接收 " << bytesRead << " 字节" << std::endl;
+                        return false;
+                    }
+                    
+                    // 添加设备信息到数据包
+                    size_t oldSize = packet.data.size();
+                    packet.data.resize(oldSize + sizeof(devInfo));
+                    memcpy(packet.data.data() + oldSize, &devInfo, sizeof(devInfo));
+                    
+                    // 接收接口数量
+                    uint8_t numInterfaces = 0;
+                    if (!receive(&numInterfaces, sizeof(numInterfaces), bytesRead)) {
+                        std::cerr << "接收设备 " << i+1 << " 接口数量失败" << std::endl;
+                        return false;
+                    }
+                    
+                    std::cout << "设备 " << i+1 << " 接口数量: " << static_cast<int>(numInterfaces) << std::endl;
+                    
+                    // 添加接口数量到数据包
+                    oldSize = packet.data.size();
+                    packet.data.resize(oldSize + sizeof(numInterfaces));
+                    memcpy(packet.data.data() + oldSize, &numInterfaces, sizeof(numInterfaces));
+                    
+                    // 接收接口信息 (每个接口4字节)
+                    if (numInterfaces > 0) {
+                        size_t interfaceDataSize = numInterfaces * 4;
+                        std::vector<uint8_t> interfaceData(interfaceDataSize);
+                        
+                        if (!receive(interfaceData.data(), interfaceDataSize, bytesRead)) {
+                            std::cerr << "接收设备 " << i+1 << " 接口信息失败，实际接收 " << bytesRead << " 字节" << std::endl;
+                            return false;
+                        }
+                        
+                        // 添加接口信息到数据包
+                        oldSize = packet.data.size();
+                        packet.data.resize(oldSize + interfaceDataSize);
+                        memcpy(packet.data.data() + oldSize, interfaceData.data(), interfaceDataSize);
+                    }
+                }
+            }
+            
+            std::cout << "成功接收设备列表数据，总大小: " << packet.data.size() << " 字节" << std::endl;
+            break;
+        }
+        default: {
+            std::cerr << "未知的命令类型: " << std::hex << packet.header.command << std::dec << std::endl;
+            return false;
         }
     }
     
