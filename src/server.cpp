@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <signal.h>
 #include <atomic>
+#include <cstring>
 
 // 全局变量，用于控制程序运行状态
 std::atomic<bool> g_running(true);
