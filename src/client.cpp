@@ -12,10 +12,10 @@
 #include <filesystem>
 
 // VHCI相关常量和路径
-#define VHCI_SYSFS_PATH "/sys/devices/platform/vhci_hcd"
-#define VHCI_ATTACH_PATH "/sys/devices/platform/vhci_hcd/attach"
-#define VHCI_DETACH_PATH "/sys/devices/platform/vhci_hcd/detach"
-#define VHCI_NPORTS_PATH "/sys/devices/platform/vhci_hcd/nports"
+#define VHCI_SYSFS_PATH "/sys/devices/platform/vhci_hcd.0"
+#define VHCI_ATTACH_PATH "/sys/devices/platform/vhci_hcd.0/attach"
+#define VHCI_DETACH_PATH "/sys/devices/platform/vhci_hcd.0/detach"
+#define VHCI_NPORTS_PATH "/sys/devices/platform/vhci_hcd.0/nports"
 
 // USB速度常量
 #define USB_SPEED_UNKNOWN      0
