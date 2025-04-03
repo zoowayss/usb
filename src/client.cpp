@@ -89,9 +89,9 @@ bool VHCIDevice::isCreated() const {
 
 bool VHCIDevice::handleURBResponse(const usbip_packet& packet) {
     // 简单模拟处理，实际实现需要根据VHCI的ioctl接口进行
-    std::cout << "处理URB响应: 序列号=" << packet.ret_submit.seqnum
-              << ", 状态=" << packet.ret_submit.status
-              << ", 数据长度=" << packet.ret_submit.actual_length << std::endl;
+    std::cout << "处理URB响应: 序列号=" << packet.ret_submit_data.seqnum
+              << ", 状态=" << packet.ret_submit_data.status
+              << ", 数据长度=" << packet.ret_submit_data.actual_length << std::endl;
     
     // 在实际实现中，这里需要使用ioctl将数据传递给内核VHCI驱动
     // 由于需要访问Linux内核接口，这里仅简单模拟

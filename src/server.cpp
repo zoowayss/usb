@@ -282,10 +282,10 @@ bool USBIPServer::handleImportRequest(std::shared_ptr<TCPSocket> clientSocket, c
 }
 
 bool USBIPServer::handleURBRequest(std::shared_ptr<TCPSocket> clientSocket, const usbip_packet& packet) {
-    uint32_t seqnum = packet.cmd_submit.seqnum;
-    uint32_t devid = packet.cmd_submit.devid;
-    uint32_t direction = packet.cmd_submit.direction;
-    uint32_t ep = packet.cmd_submit.ep;
+    uint32_t seqnum = packet.cmd_submit_data.seqnum;
+    uint32_t devid = packet.cmd_submit_data.devid;
+    uint32_t direction = packet.cmd_submit_data.direction;
+    uint32_t ep = packet.cmd_submit_data.ep;
     
     std::cout << "收到URB请求: 序列号=" << seqnum 
               << ", 设备ID=" << devid 
@@ -299,15 +299,15 @@ bool USBIPServer::handleURBRequest(std::shared_ptr<TCPSocket> clientSocket, cons
     reply.header.status = 0;
     
     // 设置回复URB字段
-    reply.ret_submit.seqnum = seqnum;
-    reply.ret_submit.devid = devid;
-    reply.ret_submit.direction = direction;
-    reply.ret_submit.ep = ep;
-    reply.ret_submit.status = 0; // 成功
-    reply.ret_submit.actual_length = 0;
-    reply.ret_submit.start_frame = 0;
-    reply.ret_submit.number_of_packets = 0;
-    reply.ret_submit.error_count = 0;
+    reply.ret_submit_data.seqnum = seqnum;
+    reply.ret_submit_data.devid = devid;
+    reply.ret_submit_data.direction = direction;
+    reply.ret_submit_data.ep = ep;
+    reply.ret_submit_data.status = 0; // 成功
+    reply.ret_submit_data.actual_length = 0;
+    reply.ret_submit_data.start_frame = 0;
+    reply.ret_submit_data.number_of_packets = 0;
+    reply.ret_submit_data.error_count = 0;
     
     // 查找导出的设备
     std::shared_ptr<libusb::USBDevice> targetDevice = nullptr;
@@ -326,18 +326,18 @@ bool USBIPServer::handleURBRequest(std::shared_ptr<TCPSocket> clientSocket, cons
     
     if (!targetDevice) {
         std::cerr << "找不到请求的设备" << std::endl;
-        reply.ret_submit.status = -1; // 错误
+        reply.ret_submit_data.status = -1; // 错误
         return clientSocket->sendPacket(reply);
     }
     
     // 处理不同类型的传输
     if (ep == 0) {
         // 控制传输
-        uint8_t requestType = packet.cmd_submit.setup[0];
-        uint8_t request = packet.cmd_submit.setup[1];
-        uint16_t value = (packet.cmd_submit.setup[3] << 8) | packet.cmd_submit.setup[2];
-        uint16_t index = (packet.cmd_submit.setup[5] << 8) | packet.cmd_submit.setup[4];
-        uint16_t length = (packet.cmd_submit.setup[7] << 8) | packet.cmd_submit.setup[6];
+        uint8_t requestType = packet.cmd_submit_data.setup[0];
+        uint8_t request = packet.cmd_submit_data.setup[1];
+        uint16_t value = (packet.cmd_submit_data.setup[3] << 8) | packet.cmd_submit_data.setup[2];
+        uint16_t index = (packet.cmd_submit_data.setup[5] << 8) | packet.cmd_submit_data.setup[4];
+        uint16_t length = (packet.cmd_submit_data.setup[7] << 8) | packet.cmd_submit_data.setup[6];
         
         std::cout << "控制传输: requestType=" << (int)requestType 
                   << ", request=" << (int)request
@@ -360,14 +360,14 @@ bool USBIPServer::handleURBRequest(std::shared_ptr<TCPSocket> clientSocket, cons
         
         if (result < 0) {
             std::cerr << "控制传输失败: " << result << std::endl;
-            reply.ret_submit.status = result;
+            reply.ret_submit_data.status = result;
         } else {
             // 如果是IN传输，将获取的数据返回给客户端
             if (direction == USBIP_DIR_IN) {
                 reply.data = data;
-                reply.ret_submit.actual_length = result;
+                reply.ret_submit_data.actual_length = result;
             } else {
-                reply.ret_submit.actual_length = result;
+                reply.ret_submit_data.actual_length = result;
             }
         }
     } else {
@@ -377,19 +377,19 @@ bool USBIPServer::handleURBRequest(std::shared_ptr<TCPSocket> clientSocket, cons
         
         if (direction == USBIP_DIR_IN) {
             // 读取数据
-            std::vector<uint8_t> data(packet.cmd_submit.transfer_buffer_length, 0);
+            std::vector<uint8_t> data(packet.cmd_submit_data.transfer_buffer_length, 0);
             
             result = targetDevice->bulkTransfer(
                 ep | 0x80, // IN端点设置高位
                 data.data(), 
-                packet.cmd_submit.transfer_buffer_length,
+                packet.cmd_submit_data.transfer_buffer_length,
                 &actualLength);
             
             if (result == 0) {
                 // 成功读取数据
                 data.resize(actualLength);
                 reply.data = data;
-                reply.ret_submit.actual_length = actualLength;
+                reply.ret_submit_data.actual_length = actualLength;
             }
         } else {
             // 写入数据
@@ -400,13 +400,13 @@ bool USBIPServer::handleURBRequest(std::shared_ptr<TCPSocket> clientSocket, cons
                 &actualLength);
             
             if (result == 0) {
-                reply.ret_submit.actual_length = actualLength;
+                reply.ret_submit_data.actual_length = actualLength;
             }
         }
         
         if (result != 0) {
             std::cerr << "批量传输失败: " << result << std::endl;
-            reply.ret_submit.status = result;
+            reply.ret_submit_data.status = result;
         }
     }
     

@@ -148,7 +148,7 @@ bool TCPSocket::sendPacket(const usbip_packet& packet) {
     // 根据命令类型发送不同的数据
     switch (packet.header.command) {
         case USBIP_CMD_SUBMIT: {
-            cmd_submit cmd = packet.cmd_submit;
+            cmd_submit cmd = packet.cmd_submit_data;
             cmd.seqnum = usbip_utils::htonl_wrap(cmd.seqnum);
             cmd.devid = usbip_utils::htonl_wrap(cmd.devid);
             cmd.direction = usbip_utils::htonl_wrap(cmd.direction);
@@ -165,7 +165,7 @@ bool TCPSocket::sendPacket(const usbip_packet& packet) {
             break;
         }
         case USBIP_RET_SUBMIT: {
-            ret_submit ret = packet.ret_submit;
+            ret_submit ret = packet.ret_submit_data;
             ret.seqnum = usbip_utils::htonl_wrap(ret.seqnum);
             ret.devid = usbip_utils::htonl_wrap(ret.devid);
             ret.direction = usbip_utils::htonl_wrap(ret.direction);
@@ -243,20 +243,20 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
                 return false;
             }
             
-            packet.cmd_submit.seqnum = usbip_utils::ntohl_wrap(cmd.seqnum);
-            packet.cmd_submit.devid = usbip_utils::ntohl_wrap(cmd.devid);
-            packet.cmd_submit.direction = usbip_utils::ntohl_wrap(cmd.direction);
-            packet.cmd_submit.ep = usbip_utils::ntohl_wrap(cmd.ep);
-            packet.cmd_submit.transfer_flags = usbip_utils::ntohl_wrap(cmd.transfer_flags);
-            packet.cmd_submit.transfer_buffer_length = usbip_utils::ntohl_wrap(cmd.transfer_buffer_length);
-            packet.cmd_submit.start_frame = usbip_utils::ntohl_wrap(cmd.start_frame);
-            packet.cmd_submit.number_of_packets = usbip_utils::ntohl_wrap(cmd.number_of_packets);
-            packet.cmd_submit.interval = usbip_utils::ntohl_wrap(cmd.interval);
-            memcpy(packet.cmd_submit.setup, cmd.setup, 8);
+            packet.cmd_submit_data.seqnum = usbip_utils::ntohl_wrap(cmd.seqnum);
+            packet.cmd_submit_data.devid = usbip_utils::ntohl_wrap(cmd.devid);
+            packet.cmd_submit_data.direction = usbip_utils::ntohl_wrap(cmd.direction);
+            packet.cmd_submit_data.ep = usbip_utils::ntohl_wrap(cmd.ep);
+            packet.cmd_submit_data.transfer_flags = usbip_utils::ntohl_wrap(cmd.transfer_flags);
+            packet.cmd_submit_data.transfer_buffer_length = usbip_utils::ntohl_wrap(cmd.transfer_buffer_length);
+            packet.cmd_submit_data.start_frame = usbip_utils::ntohl_wrap(cmd.start_frame);
+            packet.cmd_submit_data.number_of_packets = usbip_utils::ntohl_wrap(cmd.number_of_packets);
+            packet.cmd_submit_data.interval = usbip_utils::ntohl_wrap(cmd.interval);
+            memcpy(packet.cmd_submit_data.setup, cmd.setup, 8);
             
             // 如果是OUT方向，接收数据
-            if (packet.cmd_submit.direction == USBIP_DIR_OUT && packet.cmd_submit.transfer_buffer_length > 0) {
-                packet.data.resize(packet.cmd_submit.transfer_buffer_length);
+            if (packet.cmd_submit_data.direction == USBIP_DIR_OUT && packet.cmd_submit_data.transfer_buffer_length > 0) {
+                packet.data.resize(packet.cmd_submit_data.transfer_buffer_length);
                 if (!receive(packet.data.data(), packet.data.size(), bytesRead)) {
                     return false;
                 }
@@ -269,19 +269,19 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
                 return false;
             }
             
-            packet.ret_submit.seqnum = usbip_utils::ntohl_wrap(ret.seqnum);
-            packet.ret_submit.devid = usbip_utils::ntohl_wrap(ret.devid);
-            packet.ret_submit.direction = usbip_utils::ntohl_wrap(ret.direction);
-            packet.ret_submit.ep = usbip_utils::ntohl_wrap(ret.ep);
-            packet.ret_submit.status = usbip_utils::ntohl_wrap(ret.status);
-            packet.ret_submit.actual_length = usbip_utils::ntohl_wrap(ret.actual_length);
-            packet.ret_submit.start_frame = usbip_utils::ntohl_wrap(ret.start_frame);
-            packet.ret_submit.number_of_packets = usbip_utils::ntohl_wrap(ret.number_of_packets);
-            packet.ret_submit.error_count = usbip_utils::ntohl_wrap(ret.error_count);
+            packet.ret_submit_data.seqnum = usbip_utils::ntohl_wrap(ret.seqnum);
+            packet.ret_submit_data.devid = usbip_utils::ntohl_wrap(ret.devid);
+            packet.ret_submit_data.direction = usbip_utils::ntohl_wrap(ret.direction);
+            packet.ret_submit_data.ep = usbip_utils::ntohl_wrap(ret.ep);
+            packet.ret_submit_data.status = usbip_utils::ntohl_wrap(ret.status);
+            packet.ret_submit_data.actual_length = usbip_utils::ntohl_wrap(ret.actual_length);
+            packet.ret_submit_data.start_frame = usbip_utils::ntohl_wrap(ret.start_frame);
+            packet.ret_submit_data.number_of_packets = usbip_utils::ntohl_wrap(ret.number_of_packets);
+            packet.ret_submit_data.error_count = usbip_utils::ntohl_wrap(ret.error_count);
             
             // 如果是IN方向，接收数据
-            if (packet.ret_submit.direction == USBIP_DIR_IN && packet.ret_submit.actual_length > 0) {
-                packet.data.resize(packet.ret_submit.actual_length);
+            if (packet.ret_submit_data.direction == USBIP_DIR_IN && packet.ret_submit_data.actual_length > 0) {
+                packet.data.resize(packet.ret_submit_data.actual_length);
                 if (!receive(packet.data.data(), packet.data.size(), bytesRead)) {
                     return false;
                 }

@@ -126,8 +126,8 @@ struct ret_submit {
 struct usbip_packet {
     usbip_header header;
     union {
-        cmd_submit cmd_submit;
-        ret_submit ret_submit;
+        cmd_submit cmd_submit_data;
+        ret_submit ret_submit_data;
         op_devlist_request devlist_req;
         op_import_request import_req;
         op_import_reply import_rep;
