@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <iomanip>
+#include <fcntl.h>
 
 // TCPSocket实现
 TCPSocket::~TCPSocket() {
@@ -440,6 +441,72 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
     return true;
 }
 
+bool TCPSocket::setTimeout(int seconds) {
+    struct timeval tv;
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    
+    // 设置接收超时
+    if (setsockopt(sockfd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        std::cerr << "设置套接字接收超时失败: " << strerror(errno) << std::endl;
+        return false;
+    }
+    
+    // 设置发送超时
+    if (setsockopt(sockfd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        std::cerr << "设置套接字发送超时失败: " << strerror(errno) << std::endl;
+        return false;
+    }
+    
+    return true;
+}
+
+bool TCPSocket::receiveWithTimeout(void* buffer, size_t size, size_t& bytesRead, int timeoutSec) {
+    // 保存当前的套接字标志
+    int flags = fcntl(sockfd_, F_GETFL, 0);
+    if (flags == -1) {
+        std::cerr << "获取套接字标志失败: " << strerror(errno) << std::endl;
+        return false;
+    }
+    
+    // 设置超时
+    struct timeval tv;
+    tv.tv_sec = timeoutSec;
+    tv.tv_usec = 0;
+    
+    if (setsockopt(sockfd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        std::cerr << "设置套接字接收超时失败: " << strerror(errno) << std::endl;
+        return false;
+    }
+    
+    // 执行带超时的接收
+    bool result = receive(buffer, size, bytesRead);
+    
+    // 恢复原始标志
+    if (fcntl(sockfd_, F_SETFL, flags) == -1) {
+        std::cerr << "恢复套接字标志失败: " << strerror(errno) << std::endl;
+    }
+    
+    return result;
+}
+
+bool TCPSocket::receivePacketWithTimeout(usbip_packet& packet, int timeoutSec) {
+    // 设置接收超时
+    struct timeval tv;
+    tv.tv_sec = timeoutSec;
+    tv.tv_usec = 0;
+    
+    if (setsockopt(sockfd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        std::cerr << "设置套接字接收超时失败: " << strerror(errno) << std::endl;
+        return false;
+    }
+    
+    // 尝试接收数据包
+    bool result = receivePacket(packet);
+    
+    return result;
+}
+
 // Server实现
 Server::Server(int port)
     : port_(port), running_(false) {
@@ -503,6 +570,9 @@ bool Client::connect(const std::string& host, int port) {
         return false;
     }
     
+    // 设置5秒超时
+    socket_->setTimeout(5);
+    
     if (!socket_->connect(host, port)) {
         return false;
     }
@@ -525,4 +595,8 @@ bool Client::sendPacket(const usbip_packet& packet) {
 
 bool Client::receivePacket(usbip_packet& packet) {
     return socket_->receivePacket(packet);
+}
+
+bool Client::receivePacketWithTimeout(usbip_packet& packet, int timeoutSec) {
+    return socket_->receivePacketWithTimeout(packet, timeoutSec);
 } 

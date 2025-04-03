@@ -33,12 +33,21 @@ public:
     bool send(const void* data, size_t size);
     bool receive(void* buffer, size_t size, size_t& bytesRead);
     
+    // 新增：带超时的接收方法
+    bool receiveWithTimeout(void* buffer, size_t size, size_t& bytesRead, int timeoutSec = 5);
+    
+    // 新增：设置套接字超时
+    bool setTimeout(int seconds);
+    
     bool isValid() const { return sockfd_ >= 0; }
     void close();
     
     // 发送和接收完整的USBIP包
     bool sendPacket(const usbip_packet& packet);
     bool receivePacket(usbip_packet& packet);
+    
+    // 新增：带超时的接收包方法
+    bool receivePacketWithTimeout(usbip_packet& packet, int timeoutSec = 5);
 
 private:
     int sockfd_;
@@ -78,6 +87,9 @@ public:
     // 发送和接收USBIP包
     bool sendPacket(const usbip_packet& packet);
     bool receivePacket(usbip_packet& packet);
+    
+    // 新增：带超时的接收包方法
+    bool receivePacketWithTimeout(usbip_packet& packet, int timeoutSec = 5);
     
     bool isConnected() const { return socket_ && socket_->isValid(); }
 

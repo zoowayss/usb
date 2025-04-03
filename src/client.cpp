@@ -385,30 +385,56 @@ bool USBIPClient::importDevice(const std::string& busid) {
 }
 
 void USBIPClient::communicationThread() {
-    std::cout << "通信线程启动" << std::endl;
+    std::cout << "通信线程启动，等待USB请求和响应..." << std::endl;
     
-    // 简单模拟URB提交
-    // 在实际实现中，应该监听VHCI设备的请求，并转发给服务端
-    while (running_) {
-        // 这里应该从VHCI设备读取URB请求，然后发送给服务端
-        // 由于需要访问Linux内核接口，这里仅简单模拟
-        
-        // 假设收到了服务端的URB响应
-        usbip_packet packet;
-        
-        // 尝试接收服务端数据
-        if (client_->receivePacket(packet)) {
-            // 处理响应
-            std::lock_guard<std::mutex> lock(virtualDeviceMutex_);
-            if (virtualDevice_ && virtualDevice_->isCreated()) {
-                virtualDevice_->handleURBResponse(packet);
+    // 为信号处理准备
+    bool localRunning = true;
+    
+    // 设置定期检查退出标志
+    const int TIMEOUT_SECONDS = 2;  // 2秒超时
+    int noDataCount = 0;
+    const int MAX_NO_DATA = 5;      // 5次无数据后提示用户
+    
+    while (running_ && localRunning) {
+        try {
+            // 检查是否有退出请求
+            if (!running_) {
+                std::cout << "收到退出请求，通信线程终止" << std::endl;
+                break;
             }
-        } else {
-            // 如果接收失败，可能是连接断开，尝试重新连接
-            std::cerr << "与服务端的连接断开，尝试重新连接..." << std::endl;
             
-            // 重连逻辑...
-            break;
+            // 假设收到了服务端的URB响应
+            usbip_packet packet;
+            
+            // 尝试接收服务端数据，使用超时方式
+            std::cout << "等待服务端数据，超时时间 " << TIMEOUT_SECONDS << " 秒..." << std::endl;
+            if (client_->receivePacketWithTimeout(packet, TIMEOUT_SECONDS)) {
+                noDataCount = 0; // 重置无数据计数器
+                
+                // 处理响应
+                std::lock_guard<std::mutex> lock(virtualDeviceMutex_);
+                if (virtualDevice_ && virtualDevice_->isCreated()) {
+                    virtualDevice_->handleURBResponse(packet);
+                }
+            } else {
+                // 超时但没有接收到数据
+                noDataCount++;
+                
+                if (noDataCount >= MAX_NO_DATA) {
+                    std::cout << "长时间未收到服务端数据，但连接仍然保持..." << std::endl;
+                    std::cout << "您可以随时按 Ctrl+C 停止客户端" << std::endl;
+                    noDataCount = 0; // 重置计数器
+                }
+                
+                // 休眠一小段时间，避免过度消耗CPU
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "通信线程捕获到异常: " << e.what() << std::endl;
+            // 发生异常但继续运行，除非接收到停止信号
+        } catch (...) {
+            std::cerr << "通信线程捕获到未知异常" << std::endl;
+            // 发生异常但继续运行，除非接收到停止信号
         }
     }
     
