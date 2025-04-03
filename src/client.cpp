@@ -239,15 +239,11 @@ bool USBIPClient::getDeviceList() {
         return false;
     }
     
-    // 直接从原始数据中读取网络字节序设备数量
-    uint32_t netNumDevices = 0;
-    memcpy(&netNumDevices, reply.data.data(), sizeof(netNumDevices));
+    // 直接使用第一个字节作为设备数量 - 根据日志分析这是正确的方法
+    // 01 00 00 00 表示设备数量为1
+    uint32_t numDevices = reply.data[0];
     
-    // 使用 ntohl 转换为主机字节序（确保字节序正确）
-    uint32_t numDevices = ntohl(netNumDevices);
-    
-    std::cout << "原始设备数量(网络字节序): 0x" << std::hex << netNumDevices 
-              << ", 转换后设备数量: " << std::dec << numDevices << std::endl;
+    std::cout << "设备列表中包含 " << numDevices << " 个设备" << std::endl;
     
     // 计算预期的数据大小
     size_t expectedSize = sizeof(uint32_t); // 设备数量字段
