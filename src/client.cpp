@@ -215,6 +215,14 @@ bool USBIPClient::getDeviceList() {
     std::lock_guard<std::mutex> lock(deviceListMutex_);
     deviceList_.clear();
     
+    // 打印收到的原始数据前32字节（调试用）
+    std::cout << "收到的设备列表原始数据前32字节: ";
+    for (size_t i = 0; i < reply.data.size() && i < 32; ++i) {
+        std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                  << static_cast<int>(reply.data[i]) << " ";
+    }
+    std::cout << std::dec << std::endl;
+    
     // 解析设备数量
     if (reply.data.size() < sizeof(uint32_t)) {
         std::cerr << "设备列表数据不完整: 需要至少 " << sizeof(uint32_t) 
@@ -231,11 +239,15 @@ bool USBIPClient::getDeviceList() {
         return false;
     }
     
-    uint32_t numDevices = 0;
-    memcpy(&numDevices, reply.data.data(), sizeof(numDevices));
-    numDevices = usbip_utils::ntohl_wrap(numDevices);
+    // 直接从原始数据中读取网络字节序设备数量
+    uint32_t netNumDevices = 0;
+    memcpy(&netNumDevices, reply.data.data(), sizeof(netNumDevices));
     
-    std::cout << "设备列表中包含 " << numDevices << " 个设备" << std::endl;
+    // 使用 ntohl 转换为主机字节序（确保字节序正确）
+    uint32_t numDevices = ntohl(netNumDevices);
+    
+    std::cout << "原始设备数量(网络字节序): 0x" << std::hex << netNumDevices 
+              << ", 转换后设备数量: " << std::dec << numDevices << std::endl;
     
     // 计算预期的数据大小
     size_t expectedSize = sizeof(uint32_t); // 设备数量字段
