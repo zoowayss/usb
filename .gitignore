@@ -1,0 +1,74 @@
+# 编译生成的文件
+build/
+*.o
+*.so
+*.a
+*.lo
+*.la
+*.dylib
+*.dll
+*.exe
+bin/
+obj/
+build/
+
+# 可执行文件
+/bin/usbip
+
+# 依赖文件
+*.d
+
+# 临时文件
+*.tmp
+*.bak
+*~
+.*.swp
+.*.swo
+
+# Debug文件
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# IDE和编辑器文件
+.vscode/
+.idea/
+*.code-workspace
+.vim/
+*.cbp
+*.layout
+*.depend
+*.user
+.project
+.cproject
+.settings/
+
+# 操作系统特有文件
+## Mac
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+## Linux
+*~
+.directory
+
+# 日志文件
+*.log
+log/
+logs/
+
+# 打包文件
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# 配置文件中的敏感信息
+*.conf
+config.local.h 
