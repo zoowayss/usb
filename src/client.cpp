@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <ctime>
 
 // VHCI相关常量和结构体定义
 #define USBIP_VHCI_PATH "/dev/vhci"  // 使用发现的实际设备路径
@@ -390,10 +391,11 @@ void USBIPClient::communicationThread() {
     // 为信号处理准备
     bool localRunning = true;
     
-    // 设置定期检查退出标志
+    // 设置定期检查退出标志和发送请求
     const int TIMEOUT_SECONDS = 2;  // 2秒超时
     int noDataCount = 0;
     const int MAX_NO_DATA = 5;      // 5次无数据后提示用户
+    int requestInterval = 0;        // 请求间隔计数器
     
     while (running_ && localRunning) {
         try {
@@ -403,11 +405,49 @@ void USBIPClient::communicationThread() {
                 break;
             }
             
-            // 假设收到了服务端的URB响应
-            usbip_packet packet;
+            // 每隔一段时间主动向服务端发送一个URB请求
+            if (requestInterval <= 0) {
+                // 创建一个测试URB请求（控制传输）
+                usbip_packet request;
+                request.header.version = USBIP_VERSION;
+                request.header.command = USBIP_CMD_SUBMIT;
+                request.header.status = 0;
+                
+                request.cmd_submit_data.seqnum = static_cast<uint32_t>(time(nullptr)); // 使用时间戳作为序列号
+                request.cmd_submit_data.devid = 1; // 假设设备ID为1
+                request.cmd_submit_data.direction = USBIP_DIR_IN; // IN方向，从设备读取数据
+                request.cmd_submit_data.ep = 0; // 端点0（控制传输端点）
+                request.cmd_submit_data.transfer_flags = 0;
+                request.cmd_submit_data.transfer_buffer_length = 8; // 请求8字节数据
+                request.cmd_submit_data.start_frame = 0;
+                request.cmd_submit_data.number_of_packets = 0;
+                request.cmd_submit_data.interval = 0;
+                
+                // 设置控制传输的标准请求
+                // Setup包: bmRequestType(1) bRequest(1) wValue(2) wIndex(2) wLength(2)
+                request.cmd_submit_data.setup[0] = 0x80; // 设备到主机，标准请求，设备接收方
+                request.cmd_submit_data.setup[1] = 0x06; // GET_DESCRIPTOR请求
+                request.cmd_submit_data.setup[2] = 0x01; // 描述符类型：设备描述符
+                request.cmd_submit_data.setup[3] = 0x00;
+                request.cmd_submit_data.setup[4] = 0x00; // wIndex = 0
+                request.cmd_submit_data.setup[5] = 0x00;
+                request.cmd_submit_data.setup[6] = 0x08; // wLength = 8
+                request.cmd_submit_data.setup[7] = 0x00;
+                
+                std::cout << "向服务端发送URB请求，序列号: " << request.cmd_submit_data.seqnum << std::endl;
+                if (client_->sendPacket(request)) {
+                    std::cout << "URB请求发送成功，等待响应..." << std::endl;
+                    requestInterval = 10; // 10次循环后再次发送请求（约2秒）
+                } else {
+                    std::cerr << "发送URB请求失败" << std::endl;
+                }
+            } else {
+                requestInterval--;
+            }
             
             // 尝试接收服务端数据，使用超时方式
             std::cout << "等待服务端数据，超时时间 " << TIMEOUT_SECONDS << " 秒..." << std::endl;
+            usbip_packet packet;
             if (client_->receivePacketWithTimeout(packet, TIMEOUT_SECONDS)) {
                 noDataCount = 0; // 重置无数据计数器
                 
