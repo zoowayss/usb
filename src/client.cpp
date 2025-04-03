@@ -580,7 +580,13 @@ bool USBIPClient::importDevice(const std::string& busid) {
     }
     
     // 将服务器地址记录到VHCIDevice类中用于激活设备
-    virtualDevice_->setServerHost(serverHost_);
+    // 转换为VHCIDevice类型才能调用setServerHost方法
+    VHCIDevice* vhciDevice = dynamic_cast<VHCIDevice*>(virtualDevice_.get());
+    if (vhciDevice) {
+        vhciDevice->setServerHost(serverHost_);
+    } else {
+        std::cerr << "无法转换为VHCIDevice类型" << std::endl;
+    }
     
     std::cout << "成功导入设备: " << deviceInfo.busid << std::endl;
     return true;
