@@ -150,11 +150,13 @@ bool VHCIDevice::create(const USBDeviceInfo& deviceInfo) {
     std::string cmd1 = "echo '" + attach_cmd + "' | sudo tee " + VHCI_ATTACH_PATH + " > /dev/null";
     std::cout << "执行命令1: " << cmd1 << std::endl;
     int ret1 = system(cmd1.c_str());
+    std::cout << "命令1执行结果: " << ret1 << std::endl;
     
     // 2. 使用usbip命令行工具
-    std::string cmd2 = "sudo usbip attach -r " + serverHost_ + " -b " + deviceInfo.busid + " > /dev/null 2>&1";
+    std::string cmd2 = "sudo usbip attach -r " + serverHost_ + " -b " + deviceInfo.busid;
     std::cout << "执行命令2: " << cmd2 << std::endl;
     int ret2 = system(cmd2.c_str());
+    std::cout << "命令2执行结果: " << ret2 << std::endl;
     
     // 3. 直接写入attach文件
     bool directWrite = false;
@@ -193,7 +195,7 @@ bool VHCIDevice::create(const USBDeviceInfo& deviceInfo) {
     std::cout << "===USBIP端口状态===" << std::endl;
     system("sudo usbip port 2>/dev/null || echo 'usbip port命令不可用'");
     
-    // 即使没看到明确证据也假设成功了，因为我们已经尝试了多种方法
+    // 输出设备信息
     std::cout << "成功创建虚拟USB设备: " << deviceInfo.busid << std::endl;
     std::cout << "  厂商ID: 0x" << std::hex << deviceInfo.idVendor << std::endl;
     std::cout << "  产品ID: 0x" << std::hex << deviceInfo.idProduct << std::dec << std::endl;
@@ -206,7 +208,11 @@ bool VHCIDevice::create(const USBDeviceInfo& deviceInfo) {
     // 如果上述所有诊断输出都没有显示设备，给出额外提示
     std::cout << "\n注意: 如果设备未在lsusb中显示，可能需要手动运行:\n"
               << "sudo usbip attach -r " << serverHost_ << " -b " << deviceInfo.busid << "\n"
-              << "或者修改内核模块参数后重新安装vhci_hcd模块\n";
+              << "或者尝试:\n"
+              << "echo '" << attach_cmd << "' | sudo tee " << VHCI_ATTACH_PATH << "\n"
+              << "或者:\n"
+              << "sudo modprobe -r vhci_hcd && sudo modprobe vhci_hcd\n"
+              << "检查系统日志查看更多信息: sudo dmesg | grep vhci\n";
     
     isCreated_ = true;
     return true;
