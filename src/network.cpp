@@ -1,6 +1,7 @@
 #include "../include/network.h"
 #include <iostream>
 #include <cstring>
+#include <iomanip>
 
 // TCPSocket实现
 TCPSocket::~TCPSocket() {
@@ -106,10 +107,17 @@ bool TCPSocket::receive(void* buffer, size_t size, size_t& bytesRead) {
     char* p = static_cast<char*>(buffer);
     size_t total_read = 0;
     
+    std::cout << "准备接收 " << size << " 字节数据..." << std::endl;
+    
     while (total_read < size) {
+        std::cout << "尝试接收剩余 " << (size - total_read) << " 字节数据..." << std::endl;
         ssize_t received = ::recv(sockfd_, p + total_read, size - total_read, 0);
+        
         if (received < 0) {
-            if (errno == EINTR) continue; // 被信号中断，重试
+            if (errno == EINTR) {
+                std::cout << "接收被信号中断，重试..." << std::endl;
+                continue; // 被信号中断，重试
+            }
             std::cerr << "接收数据失败: " << strerror(errno) << std::endl;
             bytesRead = total_read;
             return false;
@@ -119,8 +127,22 @@ bool TCPSocket::receive(void* buffer, size_t size, size_t& bytesRead) {
             return false;
         }
         
+        std::cout << "成功接收 " << received << " 字节数据" << std::endl;
+        
+        // 打印前10个字节的十六进制值（如果有）
+        if (received > 0) {
+            std::cout << "接收的数据前 " << std::min(10, static_cast<int>(received)) << " 字节: ";
+            for (int i = 0; i < std::min(10, static_cast<int>(received)); i++) {
+                std::cout << std::hex << std::setfill('0') << std::setw(2) 
+                          << static_cast<int>(static_cast<unsigned char>(*(p + total_read + i))) << " ";
+            }
+            std::cout << std::dec << std::endl;
+        }
+        
         total_read += received;
     }
+    
+    std::cout << "总共接收了 " << total_read << " 字节数据" << std::endl;
     
     bytesRead = total_read;
     return true;
