@@ -387,17 +387,20 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
     // 处理官方USBIP客户端的特殊命令格式
     if (packet.header.command == USBIP_OP_REQ_IMPORT) {
         std::cout << "检测到导入请求" << std::endl;
-        // 总线ID紧跟在头部后面，已经在前12字节接收了
-        packet.import_req.version = packet.header.version;
         
-        // 从头部中提取总线ID（通常是第8-12字节，格式如"1-5\0"）
-        char busid[32] = {0};
-        for (int i = 0; i < std::min(32, static_cast<int>(bytesRead - 8)); i++) {
-            busid[i] = static_cast<char>(headerBytes[8 + i]);
+        // 接收导入请求的版本和总线ID
+        op_import_request req;
+        if (!receive(&req, sizeof(req), bytesRead)) {
+            std::cerr << "接收导入请求数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
+            return false;
         }
         
-        std::strncpy(packet.import_req.busid, busid, sizeof(packet.import_req.busid) - 1);
-        std::cout << "解析总线ID: [" << packet.import_req.busid << "]" << std::endl;
+        // 填充请求数据
+        packet.import_req.version = usbip_utils::ntohl_wrap(req.version);
+        std::strncpy(packet.import_req.busid, req.busid, sizeof(packet.import_req.busid));
+        
+        std::cout << "接收到导入请求: 版本=0x" << std::hex << packet.import_req.version
+                  << ", 总线ID=[" << packet.import_req.busid << "]" << std::dec << std::endl;
         
         return true;
     }
@@ -434,30 +437,160 @@ bool TCPSocket::receivePacket(usbip_packet& packet) {
             }
             break;
         }
-        case USBIP_RET_SUBMIT: {
-            std::cout << "接收RET_SUBMIT数据..." << std::endl;
-            ret_submit ret;
-            if (!receive(&ret, sizeof(ret), bytesRead)) {
-                std::cerr << "接收RET_SUBMIT数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
-                return false;
-            }
-            
-            packet.ret_submit_data.seqnum = usbip_utils::ntohl_wrap(ret.seqnum);
-            packet.ret_submit_data.devid = usbip_utils::ntohl_wrap(ret.devid);
-            packet.ret_submit_data.direction = usbip_utils::ntohl_wrap(ret.direction);
-            packet.ret_submit_data.ep = usbip_utils::ntohl_wrap(ret.ep);
-            packet.ret_submit_data.status = usbip_utils::ntohl_wrap(ret.status);
-            packet.ret_submit_data.actual_length = usbip_utils::ntohl_wrap(ret.actual_length);
-            packet.ret_submit_data.start_frame = usbip_utils::ntohl_wrap(ret.start_frame);
-            packet.ret_submit_data.number_of_packets = usbip_utils::ntohl_wrap(ret.number_of_packets);
-            packet.ret_submit_data.error_count = usbip_utils::ntohl_wrap(ret.error_count);
-            
-            // 如果是IN方向，接收数据
-            if (packet.ret_submit_data.direction == USBIP_DIR_IN && packet.ret_submit_data.actual_length > 0) {
-                std::cout << "接收RET_SUBMIT IN数据，大小: " << packet.ret_submit_data.actual_length << " 字节" << std::endl;
-                packet.data.resize(packet.ret_submit_data.actual_length);
-                if (!receive(packet.data.data(), packet.data.size(), bytesRead)) {
-                    std::cerr << "接收RET_SUBMIT IN数据失败，实际接收 " << bytesRead << " 字节" << std::endl;
+        case USBIP_RET_SUBMIT:  // 0x0003，与USBIP_OP_REP_IMPORT相同
+        case USBIP_OP_REP_IMPORT: {
+            // 根据上下文判断实际命令类型
+            if (packet.header.command == 0x0003) {
+                // 通过检查之前的请求或其他上下文来判断
+                // 这里简化处理，直接检查结构特征
+                
+                // 尝试先接收4字节数据，判断是否为导入响应的版本字段
+                uint32_t firstField;
+                size_t peekSize;
+                if (receive(&firstField, sizeof(firstField), peekSize)) {
+                    firstField = usbip_utils::ntohl_wrap(firstField);
+                    
+                    // 如果第一个字段的值是USBIP版本(0x0111)左右，可能是导入响应
+                    if (firstField == USBIP_VERSION || (firstField & 0xFF00) == 0x0100) {
+                        std::cout << "检测到导入设备响应，版本=0x" << std::hex << firstField << std::dec << std::endl;
+                        
+                        // 这是导入响应，处理导入设备响应
+                        packet.import_rep.version = firstField;
+                        
+                        // 接收状态字段
+                        uint32_t status;
+                        if (!receive(&status, sizeof(status), peekSize)) {
+                            std::cerr << "接收导入设备响应状态失败" << std::endl;
+                            return false;
+                        }
+                        
+                        packet.import_rep.status = usbip_utils::ntohl_wrap(status);
+                        
+                        std::cout << "接收到导入设备响应：版本=0x" << std::hex << packet.import_rep.version
+                                  << ", 状态=" << packet.import_rep.status << std::dec << std::endl;
+                        
+                        // 如果状态为0（成功），接收设备信息
+                        if (packet.import_rep.status == 0) {
+                            // 接收设备信息
+                            usb_device_info& udev = packet.import_rep.udev;
+                            
+                            // 接收设备路径和总线ID
+                            if (!receive(udev.path, sizeof(udev.path), peekSize)) {
+                                std::cerr << "接收设备路径失败" << std::endl;
+                                return false;
+                            }
+                            
+                            if (!receive(udev.busid, sizeof(udev.busid), peekSize)) {
+                                std::cerr << "接收设备总线ID失败" << std::endl;
+                                return false;
+                            }
+                            
+                            // 接收其他设备参数
+                            uint32_t tmp32;
+                            uint16_t tmp16;
+                            
+                            // 接收busnum, devnum, speed (4字节 x 3)
+                            if (!receive(&tmp32, sizeof(tmp32), peekSize)) {
+                                return false;
+                            }
+                            udev.busnum = usbip_utils::ntohl_wrap(tmp32);
+                            
+                            if (!receive(&tmp32, sizeof(tmp32), peekSize)) {
+                                return false;
+                            }
+                            udev.devnum = usbip_utils::ntohl_wrap(tmp32);
+                            
+                            if (!receive(&tmp32, sizeof(tmp32), peekSize)) {
+                                return false;
+                            }
+                            udev.speed = usbip_utils::ntohl_wrap(tmp32);
+                            
+                            // 接收idVendor, idProduct, bcdDevice (2字节 x 3)
+                            if (!receive(&tmp16, sizeof(tmp16), peekSize)) {
+                                return false;
+                            }
+                            udev.idVendor = usbip_utils::ntohs_wrap(tmp16);
+                            
+                            if (!receive(&tmp16, sizeof(tmp16), peekSize)) {
+                                return false;
+                            }
+                            udev.idProduct = usbip_utils::ntohs_wrap(tmp16);
+                            
+                            if (!receive(&tmp16, sizeof(tmp16), peekSize)) {
+                                return false;
+                            }
+                            udev.bcdDevice = usbip_utils::ntohs_wrap(tmp16);
+                            
+                            // 接收bDeviceClass, bDeviceSubClass, bDeviceProtocol, 
+                            // bConfigurationValue, bNumConfigurations, bNumInterfaces (1字节 x 6)
+                            if (!receive(&udev.bDeviceClass, 1, peekSize) ||
+                                !receive(&udev.bDeviceSubClass, 1, peekSize) ||
+                                !receive(&udev.bDeviceProtocol, 1, peekSize) ||
+                                !receive(&udev.bConfigurationValue, 1, peekSize) ||
+                                !receive(&udev.bNumConfigurations, 1, peekSize) ||
+                                !receive(&udev.bNumInterfaces, 1, peekSize)) {
+                                
+                                std::cerr << "接收设备详细信息失败" << std::endl;
+                                return false;
+                            }
+                            
+                            std::cout << "成功接收设备信息:\n"
+                                      << "  总线ID: " << udev.busid << "\n"
+                                      << "  厂商ID: 0x" << std::hex << udev.idVendor << "\n"
+                                      << "  产品ID: 0x" << udev.idProduct << std::dec << "\n"
+                                      << "  设备类: " << static_cast<int>(udev.bDeviceClass) << "\n"
+                                      << "  接口数: " << static_cast<int>(udev.bNumInterfaces) << std::endl;
+                        } else {
+                            std::cerr << "导入设备失败，服务端返回状态码: " << packet.import_rep.status << std::endl;
+                        }
+                    } else {
+                        // 这是URB提交响应，处理RET_SUBMIT
+                        std::cout << "接收RET_SUBMIT数据..." << std::endl;
+                        
+                        // 重新解释第一个字段为seqnum
+                        packet.ret_submit_data.seqnum = firstField;
+                        
+                        // 接收剩余字段
+                        ret_submit ret;
+                        ret.seqnum = usbip_utils::htonl_wrap(firstField); // 已经接收过的seqnum
+                        
+                        // 接收剩余的ret_submit结构体字段
+                        // 计算剩余大小: 总大小 - 已接收的seqnum字段(4字节)
+                        size_t remainingSize = sizeof(ret_submit) - sizeof(uint32_t);
+                        char* remainingData = reinterpret_cast<char*>(&ret) + sizeof(uint32_t);
+                        
+                        if (!receive(remainingData, remainingSize, peekSize)) {
+                            std::cerr << "接收RET_SUBMIT数据失败，实际接收 " << peekSize << " 字节" << std::endl;
+                            return false;
+                        }
+                        
+                        // 填充ret_submit数据到packet
+                        packet.ret_submit_data.devid = usbip_utils::ntohl_wrap(ret.devid);
+                        packet.ret_submit_data.direction = usbip_utils::ntohl_wrap(ret.direction);
+                        packet.ret_submit_data.ep = usbip_utils::ntohl_wrap(ret.ep);
+                        packet.ret_submit_data.status = usbip_utils::ntohl_wrap(ret.status);
+                        packet.ret_submit_data.actual_length = usbip_utils::ntohl_wrap(ret.actual_length);
+                        packet.ret_submit_data.start_frame = usbip_utils::ntohl_wrap(ret.start_frame);
+                        packet.ret_submit_data.number_of_packets = usbip_utils::ntohl_wrap(ret.number_of_packets);
+                        packet.ret_submit_data.error_count = usbip_utils::ntohl_wrap(ret.error_count);
+                        
+                        // 如果是IN方向，接收数据
+                        if (packet.ret_submit_data.direction == USBIP_DIR_IN && 
+                            packet.ret_submit_data.actual_length > 0) {
+                            
+                            std::cout << "接收RET_SUBMIT IN数据，大小: " << packet.ret_submit_data.actual_length 
+                                      << " 字节" << std::endl;
+                            
+                            packet.data.resize(packet.ret_submit_data.actual_length);
+                            if (!receive(packet.data.data(), packet.data.size(), peekSize)) {
+                                std::cerr << "接收RET_SUBMIT IN数据失败，实际接收 " << peekSize 
+                                          << " 字节" << std::endl;
+                                return false;
+                            }
+                        }
+                    }
+                } else {
+                    std::cerr << "接收命令数据失败" << std::endl;
                     return false;
                 }
             }

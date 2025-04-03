@@ -532,13 +532,26 @@ bool USBIPClient::getDeviceList() {
 bool USBIPClient::importDevice(const std::string& busid) {
     std::cout << "导入设备: " << busid << std::endl;
     
+    // 确保总线ID有效
+    if (busid.empty()) {
+        std::cerr << "无效的总线ID（为空）" << std::endl;
+        return false;
+    }
+    
     // 准备请求数据包
     usbip_packet packet;
+    memset(&packet, 0, sizeof(packet));  // 确保完全清零
+    
     packet.header.version = USBIP_VERSION;
     packet.header.command = USBIP_OP_REQ_IMPORT;
     packet.header.status = 0;
+    
     packet.import_req.version = USBIP_VERSION;
+    // 确保总线ID正确复制
     strncpy(packet.import_req.busid, busid.c_str(), sizeof(packet.import_req.busid) - 1);
+    packet.import_req.busid[sizeof(packet.import_req.busid) - 1] = '\0';  // 确保字符串终止
+    
+    std::cout << "准备导入设备请求，总线ID: [" << packet.import_req.busid << "]" << std::endl;
     
     // 发送请求
     if (!client_->sendPacket(packet)) {
