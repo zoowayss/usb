@@ -242,15 +242,15 @@ bool VHCIDevice::handleURBResponse(const usbip_packet& packet) {
         uint32_t start_frame;
         uint32_t number_of_packets;
         uint32_t error_count;
-        char setup[8];
-        char data[0];  // 可变长度数据
+        uint8_t setup[8];
+        uint8_t data[0];  // 可变长度数据
     };
     
     // 计算所需的总大小
     size_t resp_size = sizeof(vhci_response) + packet.data.size();
     
     // 分配内存
-    vhci_response* resp = (vhci_response*)malloc(resp_size);
+    vhci_response* resp = static_cast<vhci_response*>(malloc(resp_size));
     if (!resp) {
         std::cerr << "无法分配内存用于URB响应" << std::endl;
         return false;
@@ -273,29 +273,49 @@ bool VHCIDevice::handleURBResponse(const usbip_packet& packet) {
         memcpy(resp->data, packet.data.data(), packet.data.size());
     }
     
-    // 定义IOCTL命令
-    #define USBIP_VHCI_IOCSUBMIT_RESP _IOW('U', 1, struct vhci_response)
-    #define USB_VHCI_IOCGIVEBACK _IOW('U', 1, struct vhci_response)
+    // 尝试使用不同的IOCTL命令
+    bool success = false;
+    const unsigned int USBIP_VHCI_IOCGIVEBACK = _IOW('U', 1, struct vhci_response);
+    const unsigned int USB_VHCI_IOCGIVEBACK = _IOW('U', 1, struct vhci_response);
     
-    // 发送响应到VHCI驱动
-    int ret = ioctl(fd_, USBIP_VHCI_IOCSUBMIT_RESP, resp);
+    // 尝试USBIP_VHCI_IOCGIVEBACK命令
+    std::cout << "尝试使用USBIP_VHCI_IOCGIVEBACK命令..." << std::endl;
+    int ret = ioctl(fd_, USBIP_VHCI_IOCGIVEBACK, resp);
     if (ret < 0) {
-        std::cerr << "USBIP_VHCI_IOCSUBMIT_RESP失败: " << strerror(errno) << std::endl;
+        std::cerr << "USBIP_VHCI_IOCGIVEBACK失败: " << strerror(errno) << std::endl;
         
-        // 尝试备用命令
+        // 尝试USB_VHCI_IOCGIVEBACK命令
+        std::cout << "尝试使用USB_VHCI_IOCGIVEBACK命令..." << std::endl;
         ret = ioctl(fd_, USB_VHCI_IOCGIVEBACK, resp);
         if (ret < 0) {
             std::cerr << "USB_VHCI_IOCGIVEBACK也失败: " << strerror(errno) << std::endl;
-            free(resp);
-            return false;
+            
+            // 尝试一些其他可能的IOCTL命令
+            const unsigned int ALT_USBIP_IOCTL = _IOW('U', 0x12, struct vhci_response);
+            std::cout << "尝试使用备用IOCTL命令..." << std::endl;
+            ret = ioctl(fd_, ALT_USBIP_IOCTL, resp);
+            if (ret < 0) {
+                std::cerr << "所有IOCTL命令都失败，无法发送URB响应" << std::endl;
+                free(resp);
+                return false;
+            } else {
+                success = true;
+            }
+        } else {
+            success = true;
         }
+    } else {
+        success = true;
     }
-    
-    std::cout << "成功将URB响应发送到VHCI驱动" << std::endl;
     
     // 释放内存
     free(resp);
-    return true;
+    
+    if (success) {
+        std::cout << "成功将URB响应发送到VHCI驱动" << std::endl;
+    }
+    
+    return success;
 }
 
 // USBIPClient实现
@@ -535,15 +555,31 @@ bool USBIPClient::importDevice(const std::string& busid) {
     
     // 检查响应类型
     if (reply.header.command != USBIP_OP_REP_IMPORT) {
-        std::cerr << "收到错误的响应类型: " << reply.header.command << std::endl;
+        std::cerr << "收到错误的响应类型: 0x" << std::hex << reply.header.command 
+                  << "，期望: 0x" << USBIP_OP_REP_IMPORT << std::dec << std::endl;
         return false;
     }
     
-    // 检查状态
+    // 检查头部状态
     if (reply.header.status != 0) {
-        std::cerr << "导入设备失败: 状态 " << reply.header.status << std::endl;
+        std::cerr << "导入设备失败: 头部状态 " << reply.header.status << std::endl;
         return false;
     }
+    
+    // 检查导入响应状态（由服务端转换为网络字节序）
+    int status = usbip_utils::ntohl_wrap(reply.import_rep.status);
+    if (status != 0) {
+        std::cerr << "导入设备失败: 响应状态 " << status << std::endl;
+        return false;
+    }
+    
+    // 将网络字节序转换为主机字节序
+    reply.import_rep.udev.busnum = usbip_utils::ntohl_wrap(reply.import_rep.udev.busnum);
+    reply.import_rep.udev.devnum = usbip_utils::ntohl_wrap(reply.import_rep.udev.devnum);
+    reply.import_rep.udev.speed = usbip_utils::ntohl_wrap(reply.import_rep.udev.speed);
+    reply.import_rep.udev.idVendor = usbip_utils::ntohs_wrap(reply.import_rep.udev.idVendor);
+    reply.import_rep.udev.idProduct = usbip_utils::ntohs_wrap(reply.import_rep.udev.idProduct);
+    reply.import_rep.udev.bcdDevice = usbip_utils::ntohs_wrap(reply.import_rep.udev.bcdDevice);
     
     // 提取设备信息
     USBDeviceInfo deviceInfo;
@@ -552,7 +588,20 @@ bool USBIPClient::importDevice(const std::string& busid) {
     deviceInfo.idVendor = reply.import_rep.udev.idVendor;
     deviceInfo.idProduct = reply.import_rep.udev.idProduct;
     deviceInfo.bDeviceClass = reply.import_rep.udev.bDeviceClass;
-    deviceInfo.isMassStorage = (reply.import_rep.udev.bDeviceClass == 0x08);
+    deviceInfo.isMassStorage = (reply.import_rep.udev.bDeviceClass == USB_CLASS_MASS_STORAGE);
+    
+    // 打印设备信息，便于调试
+    std::cout << "===导入的设备信息===" << std::endl;
+    std::cout << "设备ID: " << deviceInfo.busid << std::endl;
+    std::cout << "路径: " << deviceInfo.path << std::endl;
+    std::cout << "总线号: " << reply.import_rep.udev.busnum << std::endl;
+    std::cout << "设备号: " << reply.import_rep.udev.devnum << std::endl;
+    std::cout << "速度: " << reply.import_rep.udev.speed << std::endl;
+    std::cout << "厂商ID: 0x" << std::hex << deviceInfo.idVendor << std::endl;
+    std::cout << "产品ID: 0x" << deviceInfo.idProduct << std::dec << std::endl;
+    std::cout << "设备类: " << static_cast<int>(deviceInfo.bDeviceClass) << std::endl;
+    std::cout << "接口数: " << static_cast<int>(reply.import_rep.udev.bNumInterfaces) << std::endl;
+    std::cout << "===================" << std::endl;
     
     // 创建虚拟设备
     std::lock_guard<std::mutex> lock(virtualDeviceMutex_);
